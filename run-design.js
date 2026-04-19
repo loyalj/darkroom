@@ -1,0 +1,316 @@
+#!/usr/bin/env node
+
+/**
+ * Phase 1 design division runner.
+ *
+ * Drives the full design workflow manually:
+ *   Phase 1: Functional interview
+ *   Phase 2: Experience interview
+ *   Phase 3: Consistency check (private)
+ *   Phase 4: Clarification round (if needed)
+ *   Phase 5: Spec generation
+ *
+ * Transcripts and output artifacts are written to runs/{run-id}/
+ *
+ * Usage:
+ *   node run-design.js
+ *   node run-design.js --run-id <existing-id>   # resume a run
+ */
+
+const { spawnSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+const readline = require("readline");
+const crypto = require("crypto");
+const { createPhaseDisplay, createTicker } = require("./display");
+const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
+const { readFile, writeFile, buildSystemPrompt, logEvent, claudeCall } = require("./runner-utils");
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+const AGENTS_DIR = path.join(__dirname, "agents");
+const RUNS_DIR = path.join(__dirname, "runs");
+const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
+const SHARED_OUTPUT_FORMATS = path.join(
+  AGENTS_DIR,
+  "shared",
+  "output-formats.md"
+);
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function appendTranscript(transcriptPath, role, content) {
+  const entry = `\n## ${role}\n\n${content.trim()}\n`;
+  fs.appendFileSync(transcriptPath, entry, "utf8");
+}
+
+function runId() {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+
+// ---------------------------------------------------------------------------
+// Interactive interview phase
+// ---------------------------------------------------------------------------
+
+async function runInterviewPhase(display, agentPromptPath, systemContext, transcriptPath, completionSignal) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  const agentPrompt = readFile(agentPromptPath);
+  const systemPrompt = buildSystemPrompt(readFile(SHARED_CONVENTIONS), readFile(SHARED_OUTPUT_FORMATS), agentPrompt, systemContext || "");
+
+  const conversationHistory = [];
+
+  function question(prompt) {
+    return new Promise((resolve) => rl.question(prompt, resolve));
+  }
+
+  // Kick off with an opening message from the agent
+  display.update("thinking...");
+  let agentTurn = await runAgentTurn(systemPrompt, conversationHistory, null);
+  display.update("your turn");
+  display.log(`\nAgent: ${agentTurn}\n`);
+  appendTranscript(transcriptPath, "Agent", agentTurn);
+  conversationHistory.push({ role: "assistant", content: agentTurn });
+
+  while (true) {
+    const userInput = await question("You: ");
+    if (!userInput.trim()) continue;
+
+    appendTranscript(transcriptPath, "User", userInput);
+    conversationHistory.push({ role: "user", content: userInput });
+
+    display.update("thinking...");
+    agentTurn = await runAgentTurn(systemPrompt, conversationHistory, null);
+    display.update("your turn");
+    display.log(`\nAgent: ${agentTurn}\n`);
+    appendTranscript(transcriptPath, "Agent", agentTurn);
+    conversationHistory.push({ role: "assistant", content: agentTurn });
+
+    if (agentTurn.includes(completionSignal)) {
+      break;
+    }
+  }
+
+  rl.close();
+  return conversationHistory;
+}
+
+async function runAgentTurn(systemPrompt, history, userMessage) {
+  const turns = history.map((m) => `${m.role === "assistant" ? "Agent" : "User"}: ${m.content}`).join("\n\n");
+
+  let input;
+  if (history.length === 0) {
+    input = "Begin the interview.";
+  } else if (userMessage) {
+    input = `${turns}\n\nUser: ${userMessage}\n\nRespond as the Agent.`;
+  } else {
+    input = `${turns}\n\nRespond as the Agent.`;
+  }
+
+  const result = spawnSync(
+    "claude",
+    ["-p", "--system-prompt", systemPrompt],
+    { input, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(result.stderr || "claude exited with status " + result.status);
+  return result.stdout.trim();
+}
+
+// ---------------------------------------------------------------------------
+// Clarification round
+// ---------------------------------------------------------------------------
+
+async function runClarificationRound(issues, transcriptPath, display) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  function question(prompt) {
+    return new Promise((resolve) => rl.question(prompt, resolve));
+  }
+
+  display.log("A few things need clarification before the spec can be written.\n");
+
+  for (const issue of issues) {
+    display.log(`[${issue.id.toUpperCase()}] ${issue.summary}`);
+    display.log(`\nQuestion: ${issue.question}\n`);
+
+    const answer = await question("Your answer: ");
+    appendTranscript(transcriptPath, `Clarification [${issue.id}]`, issue.question);
+    appendTranscript(transcriptPath, "User", answer);
+    display.log("");
+  }
+
+  rl.close();
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main() {
+  const args = process.argv.slice(2);
+  const resumeIndex = args.indexOf("--run-id");
+  const id = resumeIndex >= 0 ? args[resumeIndex + 1] : runId();
+  const runDir = path.join(RUNS_DIR, id);
+
+  fs.mkdirSync(path.join(runDir, "handoff"), { recursive: true });
+
+  console.log(`\nSoftware Factory — Design Division`);
+  console.log(`Run: ${id}\n`);
+
+  logEvent(runDir, { phase: "design", event: "start" });
+
+  // ── Phase 1: Functional Interview ──────────────────────────────────────
+
+  const functionalTranscriptPath = path.join(runDir, "functional-transcript.md");
+  if (!fs.existsSync(functionalTranscriptPath)) {
+    writeFile(functionalTranscriptPath, `# Functional Interview Transcript\n`);
+    const display = createPhaseDisplay("Design", "Functional Interview", "1 of 5", "starting up", { onFinish: (ms) => logTime(runDir, "Design", "Functional Interview", ms) });
+    await runInterviewPhase(
+      display,
+      path.join(AGENTS_DIR, "design", "interviewer.md"),
+      "",
+      functionalTranscriptPath,
+      "I have everything I need on the functional side."
+    );
+    display.finish("complete");
+    logEvent(runDir, { phase: "design", event: "functional-interview-complete" });
+  } else {
+    console.log("Phase 1 transcript found — skipping.\n");
+  }
+
+  // ── Phase 2: Experience Interview ──────────────────────────────────────
+
+  const experienceTranscriptPath = path.join(runDir, "experience-transcript.md");
+  if (!fs.existsSync(experienceTranscriptPath)) {
+    writeFile(experienceTranscriptPath, `# Experience Interview Transcript\n`);
+    const functionalContext = `## Functional Interview Context\n\n${readFile(functionalTranscriptPath)}`;
+    const display = createPhaseDisplay("Design", "Experience Interview", "2 of 5", "starting up", { onFinish: (ms) => logTime(runDir, "Design", "Experience Interview", ms) });
+    await runInterviewPhase(
+      display,
+      path.join(AGENTS_DIR, "design", "experience-interviewer.md"),
+      functionalContext,
+      experienceTranscriptPath,
+      "I have everything I need on the experience side."
+    );
+    display.finish("complete");
+    logEvent(runDir, { phase: "design", event: "experience-interview-complete" });
+  } else {
+    console.log("Phase 2 transcript found — skipping.\n");
+  }
+
+  // ── Phase 3: Consistency Check ─────────────────────────────────────────
+
+  const clarificationTranscriptPath = path.join(runDir, "clarification-transcript.md");
+  let issuesFound = [];
+
+  if (!fs.existsSync(clarificationTranscriptPath)) {
+    const ticker = createTicker("Design  ·  Consistency Check  [3 of 5]");
+
+    const checkerPrompt = buildSystemPrompt(
+      readFile(SHARED_CONVENTIONS),
+      readFile(SHARED_OUTPUT_FORMATS),
+      readFile(path.join(AGENTS_DIR, "design", "consistency-checker.md"))
+    );
+
+    const checkerMessage = [
+      `## Functional Interview Transcript\n\n${readFile(functionalTranscriptPath)}`,
+      `## Experience Interview Transcript\n\n${readFile(experienceTranscriptPath)}`,
+    ].join("\n\n---\n\n");
+
+    const t0checker = Date.now();
+    const checkerResult = claudeCall(checkerPrompt, checkerMessage, (u) => logTokens(runDir, "Design", "Consistency Checker", u));
+    logTime(runDir, "Design", "Consistency Checker", Date.now() - t0checker);
+    const output = checkerResult.output ?? checkerResult;
+    issuesFound = output.issues || [];
+
+    logEvent(runDir, { phase: "design", event: "consistency-check-complete", issueCount: issuesFound.length });
+
+    if (issuesFound.length === 0) {
+      ticker.done("no issues found");
+      writeFile(clarificationTranscriptPath, `# Clarification Transcript\n\n(No issues found — clarification round skipped)\n`);
+    } else {
+      ticker.done(`${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} found`);
+      writeFile(clarificationTranscriptPath, `# Clarification Transcript\n`);
+
+      // ── Phase 4: Clarification Round ─────────────────────────────────
+
+      const display = createPhaseDisplay(
+        "Design", "Clarification", "4 of 5",
+        `${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} to resolve`,
+        { onFinish: (ms) => logTime(runDir, "Design", "Clarification", ms) }
+      );
+      await runClarificationRound(issuesFound, clarificationTranscriptPath, display);
+      display.finish("all clarifications complete");
+      logEvent(runDir, { phase: "design", event: "clarification-round-complete" });
+    }
+  } else {
+    console.log("Clarification transcript found — skipping.\n");
+  }
+
+  // ── Phase 5: Spec Generation ───────────────────────────────────────────
+
+  const buildSpecPath = path.join(runDir, "handoff", "build-spec.md");
+
+  if (!fs.existsSync(buildSpecPath)) {
+    const ticker = createTicker("Design  ·  Spec Generation  [5 of 5]");
+
+    const writerPrompt = buildSystemPrompt(
+      readFile(SHARED_CONVENTIONS),
+      readFile(SHARED_OUTPUT_FORMATS),
+      readFile(path.join(AGENTS_DIR, "design", "spec-writer.md"))
+    );
+
+    const writerMessage = [
+      `## Functional Interview Transcript\n\n${readFile(functionalTranscriptPath)}`,
+      `## Experience Interview Transcript\n\n${readFile(experienceTranscriptPath)}`,
+      `## Clarification Transcript\n\n${readFile(clarificationTranscriptPath)}`,
+    ].join("\n\n---\n\n");
+
+    const t0writer = Date.now();
+    const writerResult = claudeCall(writerPrompt, writerMessage, (u) => logTokens(runDir, "Design", "Spec Writer", u));
+    logTime(runDir, "Design", "Spec Writer", Date.now() - t0writer);
+    const output = writerResult.output ?? writerResult;
+
+    if (!output.buildSpec || !output.reviewSpec || !output.runtimeSpec || !output.factoryManifest) {
+      ticker.fail("incomplete output from spec writer");
+      console.error(JSON.stringify(writerResult, null, 2));
+      process.exit(1);
+    }
+
+    writeFile(buildSpecPath, output.buildSpec);
+    writeFile(path.join(runDir, "handoff", "review-spec.md"), output.reviewSpec);
+    writeFile(path.join(runDir, "handoff", "runtime-spec.md"), output.runtimeSpec);
+    writeFile(
+      path.join(runDir, "handoff", "factory-manifest.json"),
+      JSON.stringify(output.factoryManifest, null, 2)
+    );
+
+    ticker.done("4 specs written");
+    logEvent(runDir, { phase: "design", event: "specs-generated" });
+  } else {
+    console.log("Specs already generated — skipping.\n");
+  }
+
+  // ── Done ───────────────────────────────────────────────────────────────
+
+  writeTokenTable(runDir);
+  writeTimeTable(runDir);
+  console.log(`\n${"─".repeat(60)}`);
+  console.log(`  Design Division complete.`);
+  console.log(`  Run: ${id}`);
+  console.log(`${"─".repeat(60)}\n`);
+  console.log("Proceed to build: node run-build.js --run-id " + id + "\n");
+
+  logEvent(runDir, { phase: "design", event: "design-division-complete" });
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -1,0 +1,16 @@
+# Run artifacts
+runs/
+accounts/
+
+# Brain files (personal decision profile — do not commit)
+brain.md
+brain-config.json
+brain-transcript.md
+brain-token-usage.jsonl
+
+# Dependencies
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
