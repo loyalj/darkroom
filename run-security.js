@@ -15,11 +15,10 @@
  *   node run-security.js --run-id <id>
  */
 
-const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
-const { createPhaseDisplay, agentStream, createTicker } = require("./display");
+const { createPhaseDisplay, agentStream } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
 const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall, collectSourceFiles } = require("./runner-utils");
 
@@ -37,29 +36,6 @@ const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md
 // ---------------------------------------------------------------------------
 
 function hr2() { return "=".repeat(60); }
-
-// ---------------------------------------------------------------------------
-// Claude calls
-// ---------------------------------------------------------------------------
-
-// Streaming variant — pipes agent output directly to terminal in real time.
-// Use for long-running tool-use agents where the user needs live progress.
-function claudeToolCallStreaming(appendSystemPrompt, userMessage, cwd) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(
-      "claude",
-      ["-p", "--dangerously-skip-permissions", "--append-system-prompt", appendSystemPrompt],
-      { cwd, stdio: ["pipe", "inherit", "inherit"] }
-    );
-    proc.stdin.write(userMessage, "utf8");
-    proc.stdin.end();
-    proc.on("close", (code) => {
-      if (code !== 0) reject(new Error(`claude exited with status ${code}`));
-      else resolve();
-    });
-    proc.on("error", reject);
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Phase 1: Static analysis
@@ -124,105 +100,7 @@ async function runDynamicTester(securityDir, artifactDir, runtimeSpec, staticRep
 
   const runtimeProfile = buildRuntimeProfile(runtimeSpec, artifactDir);
 
-  // ── Step 1: Generate test plan ──────────────────────────────────────────
-
-  const approvedPlanPath = path.join(securityDir, "approved-test-plan.json");
-  let approvedTests;
-
-  if (fileExists(approvedPlanPath)) {
-    console.log("Test plan already approved — skipping plan step.\n");
-    approvedTests = readJSON(approvedPlanPath);
-  } else {
-    const planTicker = createTicker("Security  ·  Dynamic Testing  [2 of 3]  ·  generating test plan");
-
-    const plannerPrompt = buildSystemPrompt(
-      readFile(SHARED_CONVENTIONS),
-      readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "security", "dynamic-planner.md"))
-    );
-
-    const plannerMessage = [
-      `## Runtime Profile\n\n${runtimeProfile}`,
-      `## Artifact Directory\n\n${artifactDir}`,
-      `## Static Analysis Report\n\n${staticReport}`,
-    ].join("\n\n---\n\n");
-
-    const t0planner = Date.now();
-    const planResult = claudeCall(plannerPrompt, plannerMessage, (u) => logTokens(path.dirname(securityDir), "Security", "Dynamic Planner", u));
-    logTime(path.dirname(securityDir), "Security", "Dynamic Planner", Date.now() - t0planner);
-    const planOutput = planResult.output ?? planResult;
-
-    if (!planOutput.tests || planOutput.tests.length === 0) {
-      planTicker.fail("test planner returned no tests");
-      process.exit(1);
-    }
-
-    planTicker.done(`${planOutput.tests.length} tests proposed — approval required`);
-
-    // ── Step 2: Human approval ─────────────────────────────────────────────
-
-    // Write proposed plan to filesystem so orchestrator can read it in auto mode
-    const proposedPlanPath = path.join(securityDir, "proposed-test-plan.json");
-    writeFile(proposedPlanPath, JSON.stringify(planOutput.tests, null, 2));
-
-    console.log(`\n${hr2()}`);
-    console.log("  DYNAMIC TEST PLAN — Approval Required");
-    console.log(`${hr2()}\n`);
-    console.log(`${planOutput.summary}\n`);
-    console.log(`The following ${planOutput.tests.length} tests are proposed:\n`);
-
-    for (const test of planOutput.tests) {
-      console.log(`  [${test.id}] ${test.category}: ${test.description}`);
-      console.log(`         Command: ${test.command}`);
-      console.log(`         Risk:    ${test.risk}\n`);
-    }
-
-    console.log(`${hr2()}\n`);
-    console.log("Options:");
-    console.log("  'yes'         — approve and run all tests");
-    console.log("  'skip dt-1'   — remove a specific test by ID before running");
-    console.log("  'no'          — cancel dynamic testing\n");
-
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    let approved = false;
-    let tests = [...planOutput.tests];
-
-    while (!approved) {
-      if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"security-test-plan"}\n');
-      const input = (await question(rl, "Your response: ")).trim().toLowerCase();
-
-      if (input === "yes" || input === "y") {
-        approved = true;
-      } else if (input === "no" || input === "n") {
-        rl.close();
-        console.log("\nDynamic testing cancelled.\n");
-        // Write an empty report so the run can continue
-        writeFile(reportPath, "# Dynamic Security Test Report\n\n## Summary\nDynamic testing was skipped at human request.\n\nTests run: 0 | Concerns found: 0\n");
-        return readFile(reportPath);
-      } else if (input.startsWith("skip ")) {
-        const skipId = input.slice(5).trim();
-        const before = tests.length;
-        tests = tests.filter((t) => t.id !== skipId);
-        if (tests.length < before) {
-          console.log(`  Removed ${skipId}. ${tests.length} tests remaining.\n`);
-        } else {
-          console.log(`  ID '${skipId}' not found. No change.\n`);
-        }
-      } else {
-        console.log("  Type 'yes', 'skip <id>', or 'no'.\n");
-      }
-    }
-
-    rl.close();
-    approvedTests = tests;
-    writeFile(approvedPlanPath, JSON.stringify(approvedTests, null, 2));
-    logEvent(path.dirname(securityDir), { phase: "security", event: "test-plan-approved", testCount: tests.length });
-    console.log(`\nPlan approved. Running ${tests.length} tests...\n`);
-  }
-
-  // ── Step 3: Execute approved tests with streaming output ────────────────
-
-  const display = createPhaseDisplay("Security", "Dynamic Testing", "2 of 3", `${approvedTests.length} tests approved`, { onFinish: (ms) => logTime(path.dirname(securityDir), "Security", "Dynamic Testing", ms) });
+  const display = createPhaseDisplay("Security", "Dynamic Testing", "2 of 3", "planning tests...", { onFinish: (ms) => logTime(path.dirname(securityDir), "Security", "Dynamic Testing", ms) });
 
   const testerPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
@@ -234,7 +112,6 @@ async function runDynamicTester(securityDir, artifactDir, runtimeSpec, staticRep
     `## Runtime Profile\n\n${runtimeProfile}`,
     `## Artifact Directory\n\n${artifactDir}`,
     `## Static Analysis Report\n\n${staticReport}`,
-    `## Approved Test Plan\n\nRun only these approved tests (do not add others):\n${JSON.stringify(approvedTests, null, 2)}`,
     `## Security Working Directory\n\n${securityDir}`,
   ].join("\n\n---\n\n");
 

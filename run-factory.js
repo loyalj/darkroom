@@ -209,66 +209,6 @@ async function handleBuildSignal(runDir, signal) {
 // Security decision handlers
 // ---------------------------------------------------------------------------
 
-async function makeTestPlanDecision(runDir) {
-  const proposedPath = path.join(runDir, "security", "proposed-test-plan.json");
-  const brainContent = readFile(BRAIN_PATH);
-  const runBrainPath = path.join(runDir, "run-brain.md");
-  const runBrainContent = fileExists(runBrainPath) ? readFile(runBrainPath) : null;
-
-  let planSummary = "(plan not available)";
-  if (fileExists(proposedPath)) {
-    try {
-      const tests = JSON.parse(fs.readFileSync(proposedPath, "utf8"));
-      planSummary = tests.map((t) => `[${t.id}] ${t.category}: ${t.description} (risk: ${t.risk})`).join("\n");
-    } catch {}
-  }
-
-  const systemPrompt = buildSystemPrompt(
-    `You are the orchestrator for a Software Factory. Decide whether to approve, skip, or cancel a dynamic security test plan.
-
-Respond with valid JSON only:
-- To approve all: {"decision":"approve","confidence":"high"|"medium"|"low","reasoning":"..."}
-- To skip specific tests: {"decision":"skip","skipIds":["dt-1","dt-3"],"confidence":"high"|"medium"|"low","reasoning":"..."}
-- To cancel testing: {"decision":"cancel","confidence":"high"|"medium"|"low","reasoning":"..."}
-- To escalate: {"decision":"escalate","reasoning":"..."}
-
-Base your decision on the operator's security posture. For internal tools, skip tests that pose infrastructure risk. For user-facing software, run all tests unless a specific test is destructive.`,
-    `## Global Brain\n\n${brainContent}`,
-    runBrainContent ? `## Run Brain\n\n${runBrainContent}` : null
-  );
-
-  const result = claudeCall(
-    systemPrompt,
-    `## Decision Point: Security Test Plan Approval\n\n${planSummary}`,
-    (u) => logTokens("Security Test Plan Decision", u)
-  );
-
-  if (result.decision === "escalate" || result.confidence === "low") {
-    writeDecision(runDir, { decisionPoint: "security-test-plan", evidence: planSummary.slice(0, 500), brainContext: "(see brain.md)", decision: "escalate", reasoning: result.reasoning ?? "", humanOverride: false });
-    const answer = await escalate(runDir, "Low confidence on security test plan", {
-      at: "Security Phase 2 — Test Plan Approval",
-      detail: result.reasoning ?? "Unable to determine which tests are safe to run.",
-      options: ["yes (approve all)", "no (cancel)", "abort"],
-    });
-    if (/^abort/i.test(answer)) process.exit(1);
-    writeDecision(runDir, { decisionPoint: "security-test-plan", evidence: planSummary.slice(0, 200), brainContext: "(escalated)", decision: /^yes/i.test(answer) ? "approve" : "cancel", reasoning: "Human override after escalation.", humanOverride: true });
-    return /^yes/i.test(answer) ? "yes" : "no";
-  }
-
-  writeDecision(runDir, { decisionPoint: "security-test-plan", evidence: planSummary.slice(0, 500), brainContext: `security: ${brainContent.match(/## Security Posture\n([\s\S]*?)(?=\n##|$)/)?.[1]?.trim().slice(0, 200) ?? "(see brain.md)"}`, decision: result.decision, reasoning: result.reasoning ?? "", humanOverride: false });
-
-  const decisionLabel = result.decision === "approve" ? A.green("approve all") : result.decision === "skip" ? A.yellow(`skip ${(result.skipIds ?? []).join(", ")}`) : A.red("cancel");
-  console.log(`\n  ${A.cyan("●")}  Auto decision: security-test-plan → ${decisionLabel}`);
-  if (result.reasoning) console.log(`  ${A.dim("↳ " + result.reasoning.split(/[.\n]/)[0].trim())}\n`);
-
-  if (result.decision === "cancel") return "no";
-  if (result.decision === "skip" && result.skipIds?.length) {
-    // Respond with skip commands followed by yes — the runner's loop processes them sequentially
-    return (result.skipIds ?? []).map((id) => `skip ${id}`).join("\n") + "\nyes";
-  }
-  return "yes";
-}
-
 async function makeSecurityFindingDecision(runDir, signal) {
   const finding = signal.finding ?? "(finding not available)";
   const brainContent = readFile(BRAIN_PATH);
@@ -358,7 +298,6 @@ Only escalate if there is a specific unresolved concern. Approving here means th
 }
 
 async function handleSecuritySignal(runDir, signal) {
-  if (signal.point === "security-test-plan")    return makeTestPlanDecision(runDir);
   if (signal.point === "security-block")         return ""; // acknowledge BLOCK, remediations will be written
   if (signal.point === "security-finding")       return makeSecurityFindingDecision(runDir, signal);
   if (signal.point === "security-final-approval") return makeSecurityFinalApprovalDecision(runDir);
@@ -662,7 +601,7 @@ async function runBrainInterview() {
 // Run brain interview
 // ---------------------------------------------------------------------------
 
-async function runRunBrainInterview(runDir) {
+async function runRunBrainInterview(runDir, mode = "manual") {
   const runBrainPath = path.join(runDir, "run-brain.md");
   if (fileExists(runBrainPath)) {
     console.log(`  ${A.green("✓")}  Run brain found — skipping interview\n`);
@@ -670,8 +609,6 @@ async function runRunBrainInterview(runDir) {
   }
 
   const handoffDir = path.join(runDir, "handoff");
-  const transcriptPath = path.join(runDir, "run-brain-transcript.md");
-  writeFile(transcriptPath, "# Run Brain Interview Transcript\n");
 
   const systemPrompt = buildSystemPrompt(
     readFile(path.join(AGENTS_DIR, "leadership", "run-brain-interviewer.md")),
@@ -685,6 +622,33 @@ async function runRunBrainInterview(runDir) {
       ? `## Runtime Spec\n\n${readFile(path.join(handoffDir, "runtime-spec.md"))}`
       : null
   );
+
+  // Auto mode: generate run brain directly from specs + global brain — no interview needed.
+  if (mode === "auto") {
+    const display = createPhaseDisplay("Leadership", "Run Brain", "", "generating...");
+    const result = claudeCall(
+      systemPrompt,
+      "Generate the locked run brain now. All necessary context is in the specs and the global brain. Produce the locked output as specified in your output format.",
+      (u) => logTokens("Run Brain (auto)", u)
+    );
+    const lockedOutput = result.output ?? result;
+    if (!lockedOutput?.runBrain) {
+      display.stop();
+      console.error("Auto run brain generation did not produce valid output:");
+      console.error(JSON.stringify(result, null, 2));
+      process.exit(1);
+    }
+    writeFile(runBrainPath, lockedOutput.runBrain);
+    if (lockedOutput.config) {
+      writeFile(path.join(runDir, "run-config.json"), JSON.stringify(lockedOutput.config, null, 2));
+    }
+    display.finish("run-brain.md generated");
+    console.log(`\n  ${A.dim("Run brain generated from specs — applies to this run only.")}\n`);
+    return;
+  }
+
+  const transcriptPath = path.join(runDir, "run-brain-transcript.md");
+  writeFile(transcriptPath, "# Run Brain Interview Transcript\n");
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const history = [];
@@ -998,7 +962,7 @@ async function main() {
 
   // ── Run Brain ────────────────────────────────────────────────────────────
 
-  await runRunBrainInterview(runDir);
+  await runRunBrainInterview(runDir, mode);
 
   // ── Build → Review loop ─────────────────────────────────────────────────
 

@@ -21,7 +21,7 @@ const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
-const { createPhaseDisplay, agentStream, createTicker } = require("./display");
+const { createPhaseDisplay, agentStream } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
 const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall } = require("./runner-utils");
 
@@ -39,11 +39,11 @@ const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md
 // Phase 1: Runtime standup
 // ---------------------------------------------------------------------------
 
-function runtimeStandup(artifactDir, runtimeSpec) {
-  const ticker = createTicker("Review  ·  Runtime Standup  [1 of 5]");
+function runtimeStandup(artifactDir, runtimeSpec, runDir) {
+  const display = createPhaseDisplay("Review", "Runtime Standup", "1 of 5", "verifying artifact runs...", { onFinish: (ms) => logTime(runDir, "Review", "Runtime Standup", ms) });
 
   if (!fileExists(artifactDir)) {
-    ticker.fail("artifact directory not found");
+    display.finish("artifact directory not found");
     console.error("Run the build division first: node run-build.js --run-id <id>");
     process.exit(1);
   }
@@ -51,7 +51,7 @@ function runtimeStandup(artifactDir, runtimeSpec) {
   // Extract verification command from runtime spec
   const verifyMatch = runtimeSpec.match(/##\s*Verification[\s\S]*?```(?:bash)?\n([\s\S]*?)```/i);
   if (!verifyMatch) {
-    ticker.done("no verification command — proceeding");
+    display.finish("no verification command — proceeding");
     return;
   }
 
@@ -60,10 +60,11 @@ function runtimeStandup(artifactDir, runtimeSpec) {
   const verifyCmd = lines.find((l) => l.trim() && !l.trim().startsWith("#"));
 
   if (!verifyCmd) {
-    ticker.done("could not parse verification command — proceeding");
+    display.finish("could not parse verification command — proceeding");
     return;
   }
 
+  display.update(`running: ${verifyCmd.trim()}`);
   const result = spawnSync(verifyCmd.trim(), [], {
     shell: true,
     cwd: artifactDir,
@@ -71,30 +72,32 @@ function runtimeStandup(artifactDir, runtimeSpec) {
   });
 
   if (result.error || result.status !== 0) {
-    ticker.fail("standup check failed");
+    display.finish("standup check failed");
     console.error("stderr:", result.stderr);
     console.error("stdout:", result.stdout);
     if (result.error) console.error("error:", result.error.message);
     process.exit(1);
   }
 
-  ticker.done("artifact is running");
-  if (result.stdout.trim()) console.log("  " + result.stdout.trim() + "\n");
+  if (result.stdout.trim()) display.log("  " + result.stdout.trim());
+  display.finish("artifact is running");
 }
 
 // ---------------------------------------------------------------------------
 // Phase 2: Scenario analysis
 // ---------------------------------------------------------------------------
 
-function runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec) {
+function runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec, runDir) {
   const coverageMapPath = path.join(reviewDir, "coverage-map.json");
 
   if (fileExists(coverageMapPath)) {
-    console.log("Coverage map found — skipping scenario analysis.\n");
-    return readJSON(coverageMapPath);
+    const display = createPhaseDisplay("Review", "Scenario Analysis", "2 of 5", "loading cached coverage map...", { onFinish: (ms) => logTime(runDir, "Review", "Scenario Analyst", ms) });
+    const cached = readJSON(coverageMapPath);
+    display.finish(`${cached.scenarioCount} scenarios (cached)`);
+    return cached;
   }
 
-  const ticker = createTicker("Review  ·  Scenario Analysis  [2 of 5]");
+  const display = createPhaseDisplay("Review", "Scenario Analysis", "2 of 5", "mapping coverage...", { onFinish: (ms) => logTime(runDir, "Review", "Scenario Analyst", ms) });
 
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
@@ -107,20 +110,19 @@ function runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec) {
     `## Runtime Spec\n\n${runtimeSpec}`,
   ].join("\n\n---\n\n");
 
-  const runDir = path.dirname(reviewDir);
   const t0 = Date.now();
   const result = claudeCall(systemPrompt, userMessage, (u) => logTokens(runDir, "Review", "Scenario Analyst", u));
   logTime(runDir, "Review", "Scenario Analyst", Date.now() - t0);
   const output = result.output ?? result;
 
   if (!output.scenarios || output.scenarios.length === 0) {
-    ticker.fail("no scenarios returned");
+    display.finish("no scenarios returned");
     console.error(JSON.stringify(result, null, 2));
     process.exit(1);
   }
 
   writeFile(coverageMapPath, JSON.stringify(output, null, 2));
-  ticker.done(`${output.scenarioCount} scenarios`);
+  display.finish(`${output.scenarioCount} scenarios`);
   return output;
 }
 
@@ -455,17 +457,13 @@ async function main() {
   const runtimeSpec = readFile(path.join(handoffDir, "runtime-spec.md"));
   const factoryManifest = readJSON(path.join(handoffDir, "factory-manifest.json"));
 
-  console.log(`\nSoftware Factory — Review Division`);
-  console.log(`Run: ${id}`);
-  console.log(`Project: ${factoryManifest.projectName}\n`);
-
   logEvent(runDir, { phase: "review", event: "start" });
 
   // Phase 1: Runtime standup
-  runtimeStandup(artifactDir, runtimeSpec);
+  runtimeStandup(artifactDir, runtimeSpec, runDir);
 
   // Phase 2: Scenario analysis
-  const coverageMap = runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec);
+  const coverageMap = runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec, runDir);
 
   // Phase 3: Explorer agents
   await runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, artifactDir, runDir);

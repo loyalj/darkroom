@@ -46,6 +46,76 @@ function claudeTurn(systemPrompt, history) {
 }
 
 // ---------------------------------------------------------------------------
+// Architect auto-review loop (auto mode only)
+// ---------------------------------------------------------------------------
+
+const ARCHITECT_AUTO_MAX_TURNS = 6;
+const BRAIN_PATH = path.join(__dirname, "brain.md");
+
+async function runArchitectAutoLoop(runDir, architectSystemPrompt, history, firstAgentTurn, transcriptPath, buildSpec, factoryManifest, executeLock, display) {
+  const brainContent = fileExists(BRAIN_PATH) ? readFile(BRAIN_PATH) : "";
+  const runBrainPath = path.join(runDir, "run-brain.md");
+  const runBrainContent = fileExists(runBrainPath) ? readFile(runBrainPath) : null;
+
+  const reviewerSystemPrompt = buildSystemPrompt(
+    readFile(path.join(AGENTS_DIR, "leadership", "architect-reviewer.md")),
+    `## Global Brain\n\n${brainContent}`,
+    runBrainContent ? `## Run Brain\n\n${runBrainContent}` : null,
+    `## Build Spec\n\n${buildSpec}`,
+    `## Factory Manifest\n\n${JSON.stringify(factoryManifest, null, 2)}`
+  );
+
+  let agentTurn = firstAgentTurn;
+  let currentHistory = [...history];
+
+  for (let turn = 1; turn <= ARCHITECT_AUTO_MAX_TURNS; turn++) {
+    display.update("brain reviewing...");
+
+    const reviewerInput = `## Architect's latest message\n\n${agentTurn}\n\n## Full conversation so far\n\n${currentHistory.map((m) => `**${m.role === "assistant" ? "Architect" : "Brain"}:** ${m.content}`).join("\n\n")}`;
+    const reviewerResponse = claudeRaw(["-p", "--system-prompt", reviewerSystemPrompt], reviewerInput).trim();
+
+    fs.appendFileSync(transcriptPath, `\n## Brain Reviewer\n\n${reviewerResponse.trim()}\n`);
+
+    // Check for escalation
+    if (/^ESCALATE:/im.test(reviewerResponse)) {
+      const reason = reviewerResponse.match(/^ESCALATE:\s*(.+)/im)?.[1] ?? "Architect plan requires human review";
+      display.update("escalating...");
+      console.log(`\n  ${A.yellow("⚑")}  Brain escalating architect review: ${reason}`);
+      process.stdout.write(`FACTORY_SIGNAL:${JSON.stringify({ point: "architect-escalate", reason })}\n`);
+      // In escalation: fall through to human-style lock (best effort)
+      return await executeLock();
+    }
+
+    // Check for lock approval
+    if (/^\s*lock\s*$/im.test(reviewerResponse)) {
+      console.log(`\n  ${A.cyan("●")}  Brain approved architect plan (turn ${turn})\n`);
+      return await executeLock();
+    }
+
+    // Brain has feedback — send it back to architect as the "user" turn
+    display.log(`\nBrain: ${clipForDisplay(reviewerResponse)}\n`);
+    fs.appendFileSync(transcriptPath, `\n## User\n\n${reviewerResponse.trim()}\n`);
+    currentHistory.push({ role: "user", content: reviewerResponse });
+
+    display.update("thinking...");
+    agentTurn = claudeTurn(architectSystemPrompt, currentHistory);
+    display.update("brain reviewing...");
+    display.log(`\nArchitect: ${clipForDisplay(agentTurn)}\n`);
+    fs.appendFileSync(transcriptPath, `\n## Architect\n\n${agentTurn.trim()}\n`);
+    currentHistory.push({ role: "assistant", content: agentTurn });
+
+    // Architect says ready to lock — brain gets one more review pass
+    if (/ready to lock the plan/i.test(agentTurn) && turn < ARCHITECT_AUTO_MAX_TURNS) {
+      continue; // loop back for final brain review
+    }
+  }
+
+  // Loop limit — lock anyway (brain had enough turns)
+  console.log(`\n  ${A.yellow("⚠")}  Architect review loop limit reached — locking plan.\n`);
+  return await executeLock();
+}
+
+// ---------------------------------------------------------------------------
 // Architect interview
 // ---------------------------------------------------------------------------
 
@@ -103,9 +173,10 @@ async function runArchitectInterview(runDir, buildSpec, factoryManifest) {
   }
 
   if (process.env.FACTORY_AUTO === "1") {
-    // Auto mode: lock immediately after opening presentation — no human review.
     rl.close();
-    lockedOutput = await executeLock();
+    lockedOutput = await runArchitectAutoLoop(
+      runDir, systemPrompt, history, agentTurn, transcriptPath, buildSpec, factoryManifest, executeLock, display
+    );
   } else {
     while (true) {
       const userInput = await question(rl, "You: ");
