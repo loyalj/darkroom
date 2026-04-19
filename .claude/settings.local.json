@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node \"d:/Coding/dark-room/inspect.js\" 756f62e5)"
+    ]
+  }
+}

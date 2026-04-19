@@ -20,7 +20,7 @@ const path = require("path");
 const readline = require("readline");
 const { createPhaseDisplay, agentStream } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall, collectSourceFiles } = require("./runner-utils");
+const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall, collectSourceFiles, extractCompact } = require("./runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -41,7 +41,7 @@ function hr2() { return "=".repeat(60); }
 // Phase 1: Static analysis
 // ---------------------------------------------------------------------------
 
-async function runStaticAnalyst(securityDir, artifactDir, runtimeSpec) {
+async function runStaticAnalyst(securityDir, artifactDir, runtimeSpec, caveman) {
   const reportPath = path.join(securityDir, "static-analysis-report.md");
 
   if (fileExists(reportPath)) {
@@ -56,7 +56,8 @@ async function runStaticAnalyst(securityDir, artifactDir, runtimeSpec) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "security", "static-analyst.md"))
+    readFile(path.join(AGENTS_DIR, "security", "static-analyst.md")),
+    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "static-analysis.md")) : null
   );
 
   const userMessage = [
@@ -90,7 +91,7 @@ function buildRuntimeProfile(runtimeSpec, artifactDir) {
   return [`Artifact directory: ${artifactDir}`, `Run command pattern:\n${runCmd}`].join("\n\n");
 }
 
-async function runDynamicTester(securityDir, artifactDir, runtimeSpec, staticReport) {
+async function runDynamicTester(securityDir, artifactDir, runtimeSpec, staticReport, caveman) {
   const reportPath = path.join(securityDir, "dynamic-test-report.md");
 
   if (fileExists(reportPath)) {
@@ -99,19 +100,21 @@ async function runDynamicTester(securityDir, artifactDir, runtimeSpec, staticRep
   }
 
   const runtimeProfile = buildRuntimeProfile(runtimeSpec, artifactDir);
+  const staticContext = caveman ? (extractCompact(staticReport) ?? staticReport) : staticReport;
 
   const display = createPhaseDisplay("Security", "Dynamic Testing", "2 of 3", "planning tests...", { onFinish: (ms) => logTime(path.dirname(securityDir), "Security", "Dynamic Testing", ms) });
 
   const testerPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "security", "dynamic-tester.md"))
+    readFile(path.join(AGENTS_DIR, "security", "dynamic-tester.md")),
+    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "dynamic-testing.md")) : null
   );
 
   const testerMessage = [
     `## Runtime Profile\n\n${runtimeProfile}`,
     `## Artifact Directory\n\n${artifactDir}`,
-    `## Static Analysis Report\n\n${staticReport}`,
+    `## Static Analysis Report\n\n${staticContext}`,
     `## Security Working Directory\n\n${securityDir}`,
   ].join("\n\n---\n\n");
 
@@ -132,7 +135,7 @@ async function runDynamicTester(securityDir, artifactDir, runtimeSpec, staticRep
 // Phase 3: Verdict
 // ---------------------------------------------------------------------------
 
-async function runVerdictAgent(securityDir, staticReport, dynamicReport) {
+async function runVerdictAgent(securityDir, staticReport, dynamicReport, caveman) {
   const verdictPath = path.join(securityDir, "security-verdict-report.md");
 
   if (fileExists(verdictPath)) {
@@ -148,9 +151,12 @@ async function runVerdictAgent(securityDir, staticReport, dynamicReport) {
     readFile(path.join(AGENTS_DIR, "security", "verdict.md"))
   );
 
+  const staticContext  = caveman ? (extractCompact(staticReport)  ?? staticReport)  : staticReport;
+  const dynamicContext = caveman ? (extractCompact(dynamicReport) ?? dynamicReport) : dynamicReport;
+
   const userMessage = [
-    `## Static Analysis Report\n\n${staticReport}`,
-    `## Dynamic Test Report\n\n${dynamicReport}`,
+    `## Static Analysis Report\n\n${staticContext}`,
+    `## Dynamic Test Report\n\n${dynamicContext}`,
     `## Security Working Directory\n\n${securityDir}`,
   ].join("\n\n---\n\n");
 
@@ -295,6 +301,7 @@ async function main() {
   }
 
   const id = args[runIdIndex + 1];
+  const caveman = args.includes("--caveman") || process.env.FACTORY_CAVEMAN === "1";
   const runDir = path.join(RUNS_DIR, id);
   const handoffDir = path.join(runDir, "handoff");
   const artifactDir = path.join(runDir, "artifact");
@@ -327,13 +334,13 @@ async function main() {
   logEvent(runDir, { phase: "security", event: "start" });
 
   // Phase 1: Static analysis
-  const staticReport = await runStaticAnalyst(securityDir, artifactDir, runtimeSpec);
+  const staticReport = await runStaticAnalyst(securityDir, artifactDir, runtimeSpec, caveman);
 
   // Phase 2: Dynamic testing
-  const dynamicReport = await runDynamicTester(securityDir, artifactDir, runtimeSpec, staticReport);
+  const dynamicReport = await runDynamicTester(securityDir, artifactDir, runtimeSpec, staticReport, caveman);
 
   // Phase 3: Verdict
-  const verdictReport = await runVerdictAgent(securityDir, staticReport, dynamicReport);
+  const verdictReport = await runVerdictAgent(securityDir, staticReport, dynamicReport, caveman);
 
   // Phase 4: Human checkpoint
   const approved = await humanCheckpoint(verdictReport, securityDir, runDir);

@@ -154,6 +154,13 @@ function clipForDisplay(text, max = 800) {
   return text.slice(0, max) + "\n\n  … (full response in transcript)";
 }
 
+// Extract the COMPACT block appended by caveman-mode agents.
+// Returns the block text (starting from "COMPACT | ...") or null if not present.
+function extractCompact(content) {
+  const idx = content.indexOf("\nCOMPACT |");
+  return idx >= 0 ? content.slice(idx + 1).trim() : null;
+}
+
 module.exports = {
   readFile, writeFile, readJSON, writeJSON, fileExists,
   buildSystemPrompt, stripCodeFence, clipForDisplay,
@@ -161,4 +168,5 @@ module.exports = {
   hr, question,
   claudeRaw, claudeCall, claudeToolCall,
   collectSourceFiles,
+  extractCompact,
 };

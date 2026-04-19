@@ -44,6 +44,7 @@ function parseArgs() {
   const mode      = get("--mode") ?? "manual";
   const stopAfter = get("--stop-after") ?? null;
   const runId     = get("--run-id") ?? crypto.randomBytes(4).toString("hex");
+  const caveman   = args.includes("--caveman");
 
   // auto mode is live — signals handled for implemented decision points
   if (stopAfter && !DIVISIONS.map((d) => d.toLowerCase()).includes(stopAfter)) {
@@ -51,7 +52,7 @@ function parseArgs() {
     process.exit(1);
   }
 
-  return { mode, stopAfter, runId };
+  return { mode, stopAfter, runId, caveman };
 }
 
 // ---------------------------------------------------------------------------
@@ -926,15 +927,17 @@ function abort(runDir, division, reason, loop) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const { mode, stopAfter, runId } = parseArgs();
+  const { mode, stopAfter, runId, caveman } = parseArgs();
   const runDir = path.join(RUNS_DIR, runId);
 
+  if (caveman) process.env.FACTORY_CAVEMAN = "1";
+
   fs.mkdirSync(runDir, { recursive: true });
-  logEvent(runDir, { phase: "factory", event: "start", mode, stopAfter });
+  logEvent(runDir, { phase: "factory", event: "start", mode, stopAfter, caveman });
 
   console.log(`\n${A.bold("Software Factory")} — Pipeline Orchestrator`);
   console.log(`Run:  ${A.cyan(runId)}`);
-  console.log(`Mode: ${mode}${stopAfter ? `  ·  stopping after ${stopAfter}` : ""}\n`);
+  console.log(`Mode: ${mode}${stopAfter ? `  ·  stopping after ${stopAfter}` : ""}${caveman ? `  ·  ${A.dim("caveman")}` : ""}\n`);
 
   // ── Brain ────────────────────────────────────────────────────────────────
 

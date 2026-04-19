@@ -23,7 +23,7 @@ const path = require("path");
 const readline = require("readline");
 const { createPhaseDisplay, agentStream } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall } = require("./runner-utils");
+const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall, extractCompact } = require("./runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -130,7 +130,7 @@ function runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec, runDir) {
 // Phase 3: Explorer agents
 // ---------------------------------------------------------------------------
 
-async function runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, artifactDir, runDir) {
+async function runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, artifactDir, runDir, caveman) {
   const total = coverageMap.scenarios.length;
   const reportsDir = path.join(reviewDir, "scenario-reports");
   fs.mkdirSync(reportsDir, { recursive: true });
@@ -157,7 +157,8 @@ async function runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, art
     const systemPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "review", "explorer.md"))
+      readFile(path.join(AGENTS_DIR, "review", "explorer.md")),
+      caveman ? readFile(path.join(AGENTS_DIR, "caveman", "scenario-result.md")) : null
     );
 
     const userMessage = [
@@ -237,7 +238,7 @@ async function runEdgeCaseAgent(reviewDir, coverageMap, runtimeSpec, artifactDir
 // Phase 5: Verdict
 // ---------------------------------------------------------------------------
 
-async function runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir) {
+async function runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir, caveman) {
   const verdictPath = path.join(reviewDir, "verdict-report.md");
 
   if (fileExists(verdictPath)) {
@@ -268,10 +269,14 @@ async function runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir) {
     readFile(path.join(AGENTS_DIR, "review", "verdict.md"))
   );
 
+  const scenarioContext = caveman
+    ? scenarioReports.map((r) => r.compact ?? `${r.status} | ${r.scenarioId} | ${r.scenarioName} | ${r.observations?.slice(0, 120) ?? "no observations"}`).join("\n")
+    : JSON.stringify(scenarioReports, null, 2);
+
   const userMessage = [
     `## Review Spec\n\n${reviewSpec}`,
     `## Scenario Coverage Map\n\n${JSON.stringify(coverageMap, null, 2)}`,
-    `## Scenario Reports\n\n${JSON.stringify(scenarioReports, null, 2)}`,
+    `## Scenario Reports\n\n${scenarioContext}`,
     `## Edge Case Summary\n\n${edgeSummary}`,
     `## Review Working Directory\n\n${reviewDir}`,
   ].join("\n\n---\n\n");
@@ -438,6 +443,7 @@ async function main() {
   }
 
   const id = args[runIdIndex + 1];
+  const caveman = args.includes("--caveman") || process.env.FACTORY_CAVEMAN === "1";
   const runDir = path.join(RUNS_DIR, id);
   const handoffDir = path.join(runDir, "handoff");
   const artifactDir = path.join(runDir, "artifact");
@@ -466,13 +472,13 @@ async function main() {
   const coverageMap = runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec, runDir);
 
   // Phase 3: Explorer agents
-  await runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, artifactDir, runDir);
+  await runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, artifactDir, runDir, caveman);
 
   // Phase 4: Edge case agent
   await runEdgeCaseAgent(reviewDir, coverageMap, runtimeSpec, artifactDir, runDir);
 
   // Phase 5: Verdict
-  const verdictReport = await runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir);
+  const verdictReport = await runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir, caveman);
 
   // Phase 6: Human approval
   const shipped = await humanApproval(verdictReport, reviewDir, runDir);
