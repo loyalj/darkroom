@@ -8,7 +8,7 @@
 
 "use strict";
 
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
@@ -112,6 +112,39 @@ function claudeCall(systemPrompt, userMessage, onUsage) {
   return text;
 }
 
+// Async tool-use call — non-blocking, resolves when claude exits. Reports usage via callback.
+function claudeToolCallAsync(appendSystemPrompt, userMessage, cwd, onUsage) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(
+      "claude",
+      ["-p", "--dangerously-skip-permissions", "--append-system-prompt", appendSystemPrompt,
+       "--output-format", "json"],
+      { cwd, stdio: ["pipe", "pipe", "pipe"] }
+    );
+
+    proc.stdin.write(userMessage, "utf8");
+    proc.stdin.end();
+
+    let stdout = "";
+    proc.stdout.on("data", (c) => { stdout += c; });
+    proc.stderr.on("data", () => {});
+
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`claude exited with status ${code}`));
+      } else {
+        try {
+          const envelope = JSON.parse(stdout.trim());
+          if (onUsage && envelope.usage) onUsage(envelope.usage);
+        } catch {}
+        resolve();
+      }
+    });
+
+    proc.on("error", reject);
+  });
+}
+
 // Tool-use call — uses --dangerously-skip-permissions, writes files via tools.
 function claudeToolCall(appendSystemPrompt, userMessage, cwd) {
   const result = spawnSync(
@@ -166,7 +199,7 @@ module.exports = {
   buildSystemPrompt, stripCodeFence, clipForDisplay,
   logEvent, writeDecision,
   hr, question,
-  claudeRaw, claudeCall, claudeToolCall,
+  claudeRaw, claudeCall, claudeToolCall, claudeToolCallAsync,
   collectSourceFiles,
   extractCompact,
 };

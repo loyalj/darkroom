@@ -194,10 +194,11 @@ function tokenSummary(runDir) {
   let totIn = 0, totOut = 0, totRead = 0;
 
   for (const e of entries) {
-    if (!byPhase[e.phase]) byPhase[e.phase] = { input: 0, output: 0, cacheRead: 0 };
-    byPhase[e.phase].input    += e.input;
-    byPhase[e.phase].output   += e.output;
+    if (!byPhase[e.phase]) byPhase[e.phase] = { input: 0, output: 0, cacheRead: 0, agents: [] };
+    byPhase[e.phase].input     += e.input;
+    byPhase[e.phase].output    += e.output;
     byPhase[e.phase].cacheRead += e.cacheRead;
+    byPhase[e.phase].agents.push({ label: e.label, input: e.input, output: e.output, cacheRead: e.cacheRead });
     totIn   += e.input;
     totOut  += e.output;
     totRead += e.cacheRead;
@@ -233,8 +234,9 @@ function timeSummary(runDir) {
   let totMs = 0;
 
   for (const e of entries) {
-    if (!byPhase[e.phase]) byPhase[e.phase] = 0;
-    byPhase[e.phase] += e.elapsedMs;
+    if (!byPhase[e.phase]) byPhase[e.phase] = { total: 0, agents: [] };
+    byPhase[e.phase].total += e.elapsedMs;
+    byPhase[e.phase].agents.push({ label: e.label, ms: e.elapsedMs });
     totMs += e.elapsedMs;
   }
 
@@ -276,7 +278,7 @@ function n(v)         { return v.toLocaleString("en-US"); }
 // Detailed view
 // ---------------------------------------------------------------------------
 
-function inspectRun(id) {
+function inspectRun(id, detail = false) {
   const runDir = path.join(RUNS_DIR, id);
   if (!fileExists(runDir)) {
     console.error(`Run not found: ${id}`);
@@ -300,8 +302,8 @@ function inspectRun(id) {
   ];
 
   for (const { name, state } of divisions) {
-    const detail = state.detail ? `  ${A.dim(state.detail)}` : "";
-    console.log(`  ${icon(state.status)}  ${col(name, 10)}${col(state.status, 12)}${detail}`);
+    const note = state.detail ? `  ${A.dim(state.detail)}` : "";
+    console.log(`  ${icon(state.status)}  ${col(name, 10)}${col(state.status, 12)}${note}`);
   }
 
   // Token usage
@@ -311,6 +313,11 @@ function inspectRun(id) {
     console.log(A.dim("  Token usage"));
     for (const [phase, p] of Object.entries(tokens.byPhase)) {
       console.log(`  ${A.dim("·")}  ${col(phase, 10)}${col(n(p.input) + " in", 14)}/ ${col(n(p.output) + " out", 14)}/ ${n(p.cacheRead)} cache`);
+      if (detail) {
+        for (const a of p.agents) {
+          console.log(`       ${A.dim(col(a.label, 28))}${A.dim(col(n(a.input) + " in", 12))}/ ${A.dim(col(n(a.output) + " out", 12))}/ ${A.dim(n(a.cacheRead) + " cache")}`);
+        }
+      }
     }
     console.log(`     ${col("Total", 10)}${A.bold(col(n(tokens.totIn) + " in", 14))}/ ${A.bold(n(tokens.totOut) + " out")}`);
   }
@@ -320,8 +327,13 @@ function inspectRun(id) {
   if (times) {
     console.log("");
     console.log(A.dim("  Time per phase"));
-    for (const [phase, ms] of Object.entries(times.byPhase)) {
-      console.log(`  ${A.dim("·")}  ${col(phase, 10)}${fmtMs(ms)}`);
+    for (const [phase, p] of Object.entries(times.byPhase)) {
+      console.log(`  ${A.dim("·")}  ${col(phase, 10)}${fmtMs(p.total)}`);
+      if (detail) {
+        for (const a of p.agents) {
+          console.log(`       ${A.dim(col(a.label, 28))}${A.dim(fmtMs(a.ms))}`);
+        }
+      }
     }
     console.log(`     ${col("Total", 10)}${A.bold(fmtMs(times.totMs))}`);
   }
@@ -407,6 +419,8 @@ function listRuns() {
 // Entry point
 // ---------------------------------------------------------------------------
 
-const [id] = process.argv.slice(2);
-if (id) inspectRun(id);
+const args = process.argv.slice(2);
+const detail = args.includes("--detail") || args.includes("-d");
+const id = args.find((a) => !a.startsWith("-"));
+if (id) inspectRun(id, detail);
 else listRuns();

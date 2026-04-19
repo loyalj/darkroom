@@ -21,9 +21,9 @@ const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
-const { createPhaseDisplay, agentStream } = require("./display");
+const { createPhaseDisplay, agentStream, A, formatElapsed } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall, extractCompact } = require("./runner-utils");
+const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall, claudeToolCallAsync, extractCompact } = require("./runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -110,9 +110,7 @@ function runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec, runDir) {
     `## Runtime Spec\n\n${runtimeSpec}`,
   ].join("\n\n---\n\n");
 
-  const t0 = Date.now();
   const result = claudeCall(systemPrompt, userMessage, (u) => logTokens(runDir, "Review", "Scenario Analyst", u));
-  logTime(runDir, "Review", "Scenario Analyst", Date.now() - t0);
   const output = result.output ?? result;
 
   if (!output.scenarios || output.scenarios.length === 0) {
@@ -137,29 +135,38 @@ async function runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, art
 
   const runtimeProfile = extractRuntimeProfile(runtimeSpec, artifactDir);
 
-  // Run one explorer per scenario (sequentially in Phase 1)
-  for (let i = 0; i < coverageMap.scenarios.length; i++) {
-    const scenario = coverageMap.scenarios[i];
+  const cached  = coverageMap.scenarios.filter((s) =>  fileExists(path.join(reportsDir, `${s.id}.json`)));
+  const pending = coverageMap.scenarios.filter((s) => !fileExists(path.join(reportsDir, `${s.id}.json`)));
+
+  const subtitle = pending.length === 0
+    ? "all scenarios cached"
+    : `0 of ${pending.length} complete  ·  up to 4 parallel`;
+
+  const display = createPhaseDisplay("Review", "Explorers", "3 of 5", subtitle,
+    { onFinish: (ms) => logTime(runDir, "Review", "Explorers", ms) });
+
+  for (const s of cached) {
+    const r = readJSON(path.join(reportsDir, `${s.id}.json`));
+    display.log(`  ${A.dim("–")} [${s.id}] ${s.name} — ${r.status} (cached)`);
+  }
+
+  if (pending.length === 0) {
+    display.finish(`${total} scenarios (all cached)`);
+    return;
+  }
+
+  const systemPrompt = buildSystemPrompt(
+    readFile(SHARED_CONVENTIONS),
+    readFile(SHARED_OUTPUT_FORMATS),
+    readFile(path.join(AGENTS_DIR, "review", "explorer.md")),
+    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "scenario-result.md")) : null
+  );
+
+  let completed = 0;
+
+  async function runOne(scenario) {
     const reportPath = path.join(reportsDir, `${scenario.id}.json`);
-
-    if (fileExists(reportPath)) {
-      const existing = readJSON(reportPath);
-      console.log(`  [${scenario.id}] ${scenario.name} — already run (${existing.status}), skipping`);
-      continue;
-    }
-
-    const display = createPhaseDisplay(
-      "Review", `Explorer  [${scenario.id}]  ${scenario.name}`, "3 of 5",
-      `scenario ${i + 1} of ${total}`,
-      { onFinish: (ms) => logTime(runDir, "Review", `Explorer [${scenario.id}]`, ms) }
-    );
-
-    const systemPrompt = buildSystemPrompt(
-      readFile(SHARED_CONVENTIONS),
-      readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "review", "explorer.md")),
-      caveman ? readFile(path.join(AGENTS_DIR, "caveman", "scenario-result.md")) : null
-    );
+    const t0 = Date.now();
 
     const userMessage = [
       `## Review Spec\n\n${reviewSpec}`,
@@ -169,7 +176,12 @@ async function runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, art
       `## Review Working Directory\n\n${reviewDir}`,
     ].join("\n\n---\n\n");
 
-    await agentStream(systemPrompt, userMessage, artifactDir, display, { onUsage: (u) => logTokens(runDir, "Review", `Explorer [${scenario.id}]`, u) });
+    try {
+      await claudeToolCallAsync(systemPrompt, userMessage, artifactDir,
+        (u) => logTokens(runDir, "Review", `Explorer [${scenario.id}]`, u));
+    } catch (err) {
+      display.log(`  ${A.red("✗")} [${scenario.id}] ${scenario.name} — agent error: ${err.message.slice(0, 80)}`);
+    }
 
     if (!fileExists(reportPath)) {
       writeFile(reportPath, JSON.stringify({
@@ -181,16 +193,41 @@ async function runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, art
         passCriteriaEvaluation: "No report written.",
         severity: "n/a",
       }, null, 2));
-      display.finish("inconclusive — no report written");
-    } else {
-      const result = readJSON(reportPath);
-      display.finish(result.status ?? "done");
     }
 
+    const result = readJSON(reportPath);
+    const elapsed = formatElapsed(Date.now() - t0);
+    logTime(runDir, "Review", `Explorer [${scenario.id}]`, Date.now() - t0);
+
+    completed++;
+    display.update(`${completed} of ${pending.length} complete  ·  up to 4 parallel`);
+
+    const icon = result.status === "pass" ? A.green("✓")
+      : result.status === "fail" ? A.red("✗")
+      : A.yellow("?");
+    display.log(`  ${icon} [${scenario.id}] ${scenario.name} — ${result.status}  ${A.dim(elapsed)}`);
     logEvent(runDir, { phase: "review", event: "scenario-complete", scenarioId: scenario.id });
   }
 
-  console.log(`\n  All scenarios explored.\n`);
+  // Worker pool — up to 4 concurrent explorers
+  const CONCURRENCY = 4;
+  let idx = 0;
+  async function worker() {
+    while (idx < pending.length) {
+      await runOne(pending[idx++]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker));
+
+  const counts = coverageMap.scenarios.reduce((acc, s) => {
+    try {
+      const status = readJSON(path.join(reportsDir, `${s.id}.json`)).status;
+      acc[status] = (acc[status] ?? 0) + 1;
+    } catch {}
+    return acc;
+  }, {});
+  const summary = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(" · ");
+  display.finish(`${total} scenarios — ${summary}`);
 }
 
 // ---------------------------------------------------------------------------
