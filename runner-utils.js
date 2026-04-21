@@ -145,6 +145,61 @@ function claudeToolCallAsync(appendSystemPrompt, userMessage, cwd, onUsage) {
   });
 }
 
+// Multi-turn interview call — plain text response with optional usage tracking.
+function claudeTurn(systemPrompt, history, onUsage) {
+  const turns = history
+    .map((m) => `${m.role === "assistant" ? "Agent" : "User"}: ${m.content}`)
+    .join("\n\n");
+  const input = history.length === 0 ? "Begin." : `${turns}\n\nRespond as the Agent.`;
+  const raw = claudeRaw(["-p", "--system-prompt", systemPrompt, "--output-format", "json"], input);
+  const envelope = JSON.parse(raw);
+  if (onUsage && envelope.usage) onUsage(envelope.usage);
+  const text = envelope.result ?? "";
+  return typeof text === "string" ? text.trim() : String(text);
+}
+
+// Shared interactive interview loop — handles opening turn, user input, user/agent-initiated lock.
+// Returns the result of executeLock().
+async function runLockableInterview({ systemPrompt, transcriptPath, display, rl, agentName, lockSignalRe, lockConfirmPrompt, executeLock, onUsage }) {
+  const history = [];
+
+  display.update("thinking...");
+  let agentTurn = claudeTurn(systemPrompt, history, onUsage);
+  display.update("your turn");
+  display.log(`\n${agentName}: ${clipForDisplay(agentTurn)}\n`);
+  fs.appendFileSync(transcriptPath, `\n## ${agentName}\n\n${agentTurn.trim()}\n`);
+  history.push({ role: "assistant", content: agentTurn });
+
+  while (true) {
+    const userInput = await question(rl, "You: ");
+    if (!userInput.trim()) continue;
+
+    if (/^(lock|done|finalize)$/i.test(userInput.trim())) {
+      return await executeLock();
+    }
+
+    fs.appendFileSync(transcriptPath, `\n## User\n\n${userInput.trim()}\n`);
+    history.push({ role: "user", content: userInput });
+
+    display.update("thinking...");
+    agentTurn = claudeTurn(systemPrompt, history, onUsage);
+    display.update("your turn");
+    display.log(`\n${agentName}: ${clipForDisplay(agentTurn)}\n`);
+    fs.appendFileSync(transcriptPath, `\n## ${agentName}\n\n${agentTurn.trim()}\n`);
+    history.push({ role: "assistant", content: agentTurn });
+
+    if (lockSignalRe.test(agentTurn)) {
+      const confirm = await question(rl, `${lockConfirmPrompt} (yes / keep discussing): `);
+      fs.appendFileSync(transcriptPath, `\n## User\n\n${confirm.trim()}\n`);
+      history.push({ role: "user", content: confirm });
+
+      if (/^(yes|y|lock|ok|do it|go|proceed)/i.test(confirm.trim())) {
+        return await executeLock();
+      }
+    }
+  }
+}
+
 // Tool-use call — uses --dangerously-skip-permissions, writes files via tools.
 function claudeToolCall(appendSystemPrompt, userMessage, cwd) {
   const result = spawnSync(
@@ -199,7 +254,7 @@ module.exports = {
   buildSystemPrompt, stripCodeFence, clipForDisplay,
   logEvent, writeDecision,
   hr, question,
-  claudeRaw, claudeCall, claudeToolCall, claudeToolCallAsync,
+  claudeRaw, claudeCall, claudeTurn, runLockableInterview, claudeToolCall, claudeToolCallAsync,
   collectSourceFiles,
   extractCompact,
 };

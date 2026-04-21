@@ -17,14 +17,13 @@
  *   node run-design.js --run-id <existing-id>   # resume a run
  */
 
-const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const crypto = require("crypto");
 const { createPhaseDisplay, createTicker } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, buildSystemPrompt, logEvent, claudeCall } = require("./runner-utils");
+const { readFile, writeFile, buildSystemPrompt, logEvent, claudeCall, claudeTurn } = require("./runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -57,7 +56,7 @@ function runId() {
 // Interactive interview phase
 // ---------------------------------------------------------------------------
 
-async function runInterviewPhase(display, agentPromptPath, systemContext, transcriptPath, completionSignal) {
+async function runInterviewPhase(display, agentPromptPath, systemContext, transcriptPath, completionSignal, onUsage) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   const agentPrompt = readFile(agentPromptPath);
@@ -71,7 +70,7 @@ async function runInterviewPhase(display, agentPromptPath, systemContext, transc
 
   // Kick off with an opening message from the agent
   display.update("thinking...");
-  let agentTurn = await runAgentTurn(systemPrompt, conversationHistory, null);
+  let agentTurn = claudeTurn(systemPrompt, conversationHistory, onUsage);
   display.update("your turn");
   display.log(`\nAgent: ${agentTurn}\n`);
   appendTranscript(transcriptPath, "Agent", agentTurn);
@@ -85,7 +84,7 @@ async function runInterviewPhase(display, agentPromptPath, systemContext, transc
     conversationHistory.push({ role: "user", content: userInput });
 
     display.update("thinking...");
-    agentTurn = await runAgentTurn(systemPrompt, conversationHistory, null);
+    agentTurn = claudeTurn(systemPrompt, conversationHistory, onUsage);
     display.update("your turn");
     display.log(`\nAgent: ${agentTurn}\n`);
     appendTranscript(transcriptPath, "Agent", agentTurn);
@@ -98,28 +97,6 @@ async function runInterviewPhase(display, agentPromptPath, systemContext, transc
 
   rl.close();
   return conversationHistory;
-}
-
-async function runAgentTurn(systemPrompt, history, userMessage) {
-  const turns = history.map((m) => `${m.role === "assistant" ? "Agent" : "User"}: ${m.content}`).join("\n\n");
-
-  let input;
-  if (history.length === 0) {
-    input = "Begin the interview.";
-  } else if (userMessage) {
-    input = `${turns}\n\nUser: ${userMessage}\n\nRespond as the Agent.`;
-  } else {
-    input = `${turns}\n\nRespond as the Agent.`;
-  }
-
-  const result = spawnSync(
-    "claude",
-    ["-p", "--system-prompt", systemPrompt],
-    { input, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(result.stderr || "claude exited with status " + result.status);
-  return result.stdout.trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +153,8 @@ async function main() {
       path.join(AGENTS_DIR, "design", "interviewer.md"),
       "",
       functionalTranscriptPath,
-      "I have everything I need on the functional side."
+      "I have everything I need on the functional side.",
+      (u) => logTokens(runDir, "Design", "Functional Interview", u)
     );
     display.finish("complete");
     logEvent(runDir, { phase: "design", event: "functional-interview-complete" });
@@ -196,7 +174,8 @@ async function main() {
       path.join(AGENTS_DIR, "design", "experience-interviewer.md"),
       functionalContext,
       experienceTranscriptPath,
-      "I have everything I need on the experience side."
+      "I have everything I need on the experience side.",
+      (u) => logTokens(runDir, "Design", "Experience Interview", u)
     );
     display.finish("complete");
     logEvent(runDir, { phase: "design", event: "experience-interview-complete" });

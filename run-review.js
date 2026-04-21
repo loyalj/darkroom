@@ -231,44 +231,145 @@ async function runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, art
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4: Edge case agent
+// Phase 4: Edge case agent — planner + parallel runners
 // ---------------------------------------------------------------------------
 
-async function runEdgeCaseAgent(reviewDir, coverageMap, runtimeSpec, artifactDir, runDir) {
+async function runEdgeCaseAgent(reviewDir, coverageMap, reviewSpec, runtimeSpec, artifactDir, runDir, caveman) {
   const summaryPath = path.join(reviewDir, "edge-case-summary.md");
+  const planPath    = path.join(reviewDir, "edge-case-plan.json");
 
   if (fileExists(summaryPath)) {
     console.log("Edge case summary found — skipping.\n");
     return;
   }
 
-  const display = createPhaseDisplay("Review", "Edge Case Exploration", "4 of 5", "finding implied scenarios", { onFinish: (ms) => logTime(runDir, "Review", "Edge Case Exploration", ms) });
   const runtimeProfile = extractRuntimeProfile(runtimeSpec, artifactDir);
+  const reportsDir = path.join(reviewDir, "scenario-reports");
+  fs.mkdirSync(reportsDir, { recursive: true });
 
-  const systemPrompt = buildSystemPrompt(
+  const display = createPhaseDisplay("Review", "Edge Cases", "4 of 5", "planning...",
+    { onFinish: (ms) => logTime(runDir, "Review", "Edge Cases", ms) });
+
+  // --- Plan (cached) ---
+  let plan;
+  if (fileExists(planPath)) {
+    plan = readJSON(planPath);
+    display.log(`  ${A.dim("–")} plan loaded from cache (${plan.edgeCases.length} cases)`);
+  } else {
+    const plannerPrompt = buildSystemPrompt(
+      readFile(SHARED_CONVENTIONS),
+      readFile(SHARED_OUTPUT_FORMATS),
+      readFile(path.join(AGENTS_DIR, "review", "edge-case-planner.md"))
+    );
+
+    const scenarioList = coverageMap.scenarios.map((s) => `- [${s.id}] ${s.name}`).join("\n");
+    const plannerMessage = [
+      `## Review Spec\n\n${reviewSpec}`,
+      `## Covered Scenarios\n\n${scenarioList}`,
+    ].join("\n\n---\n\n");
+
+    const t0 = Date.now();
+    plan = claudeCall(plannerPrompt, plannerMessage, (u) => logTokens(runDir, "Review", "Edge Case Planner", u));
+    logTime(runDir, "Review", "Edge Case Planner", Date.now() - t0);
+    if (!plan?.edgeCases?.length) {
+      display.finish("planner returned no edge cases");
+      writeFile(summaryPath, "# Edge Case Summary\n\nNo edge cases identified.\n");
+      return;
+    }
+    writeFile(planPath, JSON.stringify(plan, null, 2));
+  }
+
+  // --- Runners (parallel) ---
+  const pending = plan.edgeCases.filter((ec) => !fileExists(path.join(reportsDir, `${ec.id}.json`)));
+  const cached  = plan.edgeCases.filter((ec) =>  fileExists(path.join(reportsDir, `${ec.id}.json`)));
+
+  for (const ec of cached) {
+    const r = readJSON(path.join(reportsDir, `${ec.id}.json`));
+    display.log(`  ${A.dim("–")} [${ec.id}] ${ec.name} — ${r.status} (cached)`);
+  }
+
+  display.update(`0 of ${pending.length} complete  ·  up to 4 parallel`);
+
+  const runnerPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "review", "edge-case.md"))
+    readFile(path.join(AGENTS_DIR, "review", "edge-case-runner.md")),
+    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "edge-case-result.md")) : null
   );
 
-  const scenarioList = coverageMap.scenarios
-    .map((s) => `- [${s.id}] ${s.name}`)
-    .join("\n");
+  let completed = 0;
 
-  const userMessage = [
-    `## Covered Scenarios\n\nThe following scenarios are already assigned to explorer agents. Do not duplicate them.\n\n${scenarioList}`,
-    `## Runtime Profile\n\n${runtimeProfile}`,
-    `## Artifact Directory\n\n${artifactDir}`,
-    `## Review Working Directory\n\n${reviewDir}`,
-  ].join("\n\n---\n\n");
+  async function runOne(ec) {
+    const reportPath = path.join(reportsDir, `${ec.id}.json`);
+    const t0 = Date.now();
 
-  await agentStream(systemPrompt, userMessage, artifactDir, display, { onUsage: (u) => logTokens(runDir, "Review", "Edge Case", u) });
+    const userMessage = [
+      `## Edge Case Assignment\n\n${JSON.stringify(ec, null, 2)}`,
+      `## Runtime Profile\n\n${runtimeProfile}`,
+      `## Artifact Directory\n\n${artifactDir}`,
+      `## Review Working Directory\n\n${reviewDir}`,
+    ].join("\n\n---\n\n");
 
-  const count = fileExists(path.join(reviewDir, "scenario-reports"))
-    ? fs.readdirSync(path.join(reviewDir, "scenario-reports")).filter((f) => f.startsWith("edge-")).length
-    : 0;
-  display.finish(`${count} edge case${count === 1 ? "" : "s"} explored`);
-  logEvent(runDir, { phase: "review", event: "edge-case-complete" });
+    try {
+      await claudeToolCallAsync(runnerPrompt, userMessage, artifactDir,
+        (u) => logTokens(runDir, "Review", `Edge Case Runner [${ec.id}]`, u));
+    } catch (err) {
+      display.log(`  ${A.red("✗")} [${ec.id}] ${ec.name} — agent error: ${err.message.slice(0, 80)}`);
+    }
+
+    if (!fileExists(reportPath)) {
+      writeFile(reportPath, JSON.stringify({
+        scenarioId: ec.id, scenarioName: ec.name, status: "inconclusive",
+        observations: "Runner did not write a report file.",
+        evidence: { command: "", stdout: "", stderr: "", filesCreated: [], exitedWithError: false },
+        passCriteriaEvaluation: "No report written.", severity: "n/a",
+      }, null, 2));
+    }
+
+    const result = readJSON(reportPath);
+    const elapsed = formatElapsed(Date.now() - t0);
+    logTime(runDir, "Review", `Edge Case Runner [${ec.id}]`, Date.now() - t0);
+
+    completed++;
+    display.update(`${completed} of ${pending.length} complete  ·  up to 4 parallel`);
+
+    const icon = result.status === "pass" ? A.green("✓")
+      : result.status === "fail" ? A.red("✗")
+      : A.yellow("?");
+    display.log(`  ${icon} [${ec.id}] ${ec.name} — ${result.status}  ${A.dim(elapsed)}`);
+    logEvent(runDir, { phase: "review", event: "edge-case-complete", edgeCaseId: ec.id });
+  }
+
+  const CONCURRENCY = 4;
+  let idx = 0;
+  async function worker() { while (idx < pending.length) await runOne(pending[idx++]); }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker));
+
+  // --- Synthesize summary (no LLM call) ---
+  const allCases = plan.edgeCases;
+  const summaryLines = ["# Edge Case Summary\n"];
+  for (const ec of allCases) {
+    const reportPath = path.join(reportsDir, `${ec.id}.json`);
+    const r = fileExists(reportPath) ? readJSON(reportPath) : null;
+    summaryLines.push(`## ${ec.id}: ${ec.name}`);
+    summaryLines.push(`**Description:** ${ec.description}`);
+    if (r) {
+      summaryLines.push(`**Status:** ${r.status}`);
+      summaryLines.push(`**Observations:** ${r.observations}`);
+      summaryLines.push(`**Severity:** ${r.severity}`);
+    } else {
+      summaryLines.push("**Status:** not run");
+    }
+    summaryLines.push("");
+  }
+  writeFile(summaryPath, summaryLines.join("\n"));
+
+  const counts = allCases.reduce((acc, ec) => {
+    try { const s = readJSON(path.join(reportsDir, `${ec.id}.json`)).status; acc[s] = (acc[s] ?? 0) + 1; } catch {}
+    return acc;
+  }, {});
+  const summary = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(" · ");
+  display.finish(`${allCases.length} edge cases — ${summary}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -512,7 +613,7 @@ async function main() {
   await runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, artifactDir, runDir, caveman);
 
   // Phase 4: Edge case agent
-  await runEdgeCaseAgent(reviewDir, coverageMap, runtimeSpec, artifactDir, runDir);
+  await runEdgeCaseAgent(reviewDir, coverageMap, reviewSpec, runtimeSpec, artifactDir, runDir, caveman);
 
   // Phase 5: Verdict
   const verdictReport = await runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir, caveman);

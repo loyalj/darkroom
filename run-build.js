@@ -21,9 +21,9 @@
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
-const { createPhaseDisplay, agentStream, createTicker, A } = require("./display");
+const { createPhaseDisplay, agentStream, A, formatElapsed } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, question, hr, claudeRaw, claudeCall, claudeToolCall, collectSourceFiles } = require("./runner-utils");
+const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, question, hr, claudeRaw, claudeCall, claudeTurn, runLockableInterview, claudeToolCallAsync, collectSourceFiles } = require("./runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -35,15 +35,6 @@ const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md");
 const RETRY_BUDGET = 3;
 
-
-// For interactive interview turns
-function claudeTurn(systemPrompt, history) {
-  const turns = history
-    .map((m) => `${m.role === "assistant" ? "Agent" : "User"}: ${m.content}`)
-    .join("\n\n");
-  const input = history.length === 0 ? "Begin." : `${turns}\n\nRespond as the Agent.`;
-  return claudeRaw(["-p", "--system-prompt", systemPrompt], input);
-}
 
 // ---------------------------------------------------------------------------
 // Architect auto-review loop (auto mode only)
@@ -140,17 +131,9 @@ async function runArchitectInterview(runDir, buildSpec, factoryManifest) {
   );
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const history = [];
 
   const display = createPhaseDisplay("Build", "Architect Interview", "1 of 6", "thinking...", { onFinish: (ms) => logTime(runDir, "Build", "Architect Interview", ms) });
   display.log('\n  When you are satisfied with the plan, type "lock" to finalize.\n');
-
-  // Opening presentation
-  let agentTurn = claudeTurn(systemPrompt, history);
-  display.update("your turn");
-  display.log(`\nArchitect: ${clipForDisplay(agentTurn)}\n`);
-  fs.appendFileSync(transcriptPath, `\n## Architect\n\n${agentTurn.trim()}\n`);
-  history.push({ role: "assistant", content: agentTurn });
 
   let lockedOutput = null;
 
@@ -174,44 +157,23 @@ async function runArchitectInterview(runDir, buildSpec, factoryManifest) {
 
   if (process.env.FACTORY_AUTO === "1") {
     rl.close();
+    display.update("thinking...");
+    const firstTurn = claudeTurn(systemPrompt, [], (u) => logTokens(runDir, "Build", "Architect Interview", u));
+    display.update("your turn");
+    display.log(`\nArchitect: ${clipForDisplay(firstTurn)}\n`);
+    fs.appendFileSync(transcriptPath, `\n## Architect\n\n${firstTurn.trim()}\n`);
     lockedOutput = await runArchitectAutoLoop(
-      runDir, systemPrompt, history, agentTurn, transcriptPath, buildSpec, factoryManifest, executeLock, display
+      runDir, systemPrompt, [{ role: "assistant", content: firstTurn }], firstTurn, transcriptPath, buildSpec, factoryManifest, executeLock, display
     );
   } else {
-    while (true) {
-      const userInput = await question(rl, "You: ");
-      if (!userInput.trim()) continue;
-
-      // User-initiated lock — no need to wait for agent to say the magic phrase.
-      if (/^(lock|done|finalize)$/i.test(userInput.trim())) {
-        lockedOutput = await executeLock();
-        break;
-      }
-
-      fs.appendFileSync(transcriptPath, `\n## User\n\n${userInput.trim()}\n`);
-      history.push({ role: "user", content: userInput });
-
-      display.update("thinking...");
-      agentTurn = claudeTurn(systemPrompt, history);
-      display.update("your turn");
-      display.log(`\nArchitect: ${clipForDisplay(agentTurn)}\n`);
-      fs.appendFileSync(transcriptPath, `\n## Architect\n\n${agentTurn.trim()}\n`);
-      history.push({ role: "assistant", content: agentTurn });
-
-      // Agent-initiated lock — case-insensitive, no exact-phrase dependency.
-      if (/ready to lock the plan/i.test(agentTurn)) {
-        const confirm = await question(rl, "Lock the plan? (yes / keep discussing): ");
-        fs.appendFileSync(transcriptPath, `\n## User\n\n${confirm.trim()}\n`);
-        history.push({ role: "user", content: confirm });
-
-        if (/^(yes|y|lock|ok|do it|go|proceed)/i.test(confirm.trim())) {
-          lockedOutput = await executeLock();
-          break;
-        }
-        // Otherwise fall through and keep discussing
-      }
-    }
-
+    lockedOutput = await runLockableInterview({
+      systemPrompt, transcriptPath, display, rl,
+      agentName: "Architect",
+      lockSignalRe: /ready to lock the plan/i,
+      lockConfirmPrompt: "Lock the plan?",
+      executeLock,
+      onUsage: (u) => logTokens(runDir, "Build", "Architect Interview", u),
+    });
     rl.close();
   }
 
@@ -253,24 +215,21 @@ function getTaskInputFiles(task, buildDir) {
   return parts.length > 0 ? `## Relevant Interfaces\n\n${parts.join("\n\n")}` : "";
 }
 
-async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, attempt = 1, previousFailure = null) {
+async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, display, attempt = 1, previousFailure = null) {
   const taskStatusPath = path.join(buildDir, `task-${task.id}-status.json`);
 
   if (fileExists(taskStatusPath)) {
     const status = readJSON(taskStatusPath);
     if (status.status === "complete") {
-      console.log(`  [${task.id}] ${task.name} — already complete, skipping`);
+      display.log(`  ${A.dim("–")} [${task.id}] ${task.name} — already complete, skipping`);
       return true;
     }
   }
-
-  const ticker = createTicker(`[${task.id}] ${task.name}${attempt > 1 ? ` (attempt ${attempt}/${RETRY_BUDGET})` : ""}`);;
 
   const srcDir = path.join(buildDir, "src");
   fs.mkdirSync(srcDir, { recursive: true });
 
   const relevantInterfaces = getTaskInputFiles(task, buildDir);
-
   const retryContext = previousFailure
     ? `## Previous Attempt Failure\n\n${previousFailure}`
     : "";
@@ -290,29 +249,37 @@ async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, 
     `## Working Directory\n\nWrite all output files to: ${srcDir}\n\nThe paths in expectedOutputs are relative to this directory.`,
   ].filter(Boolean).join("\n\n---\n\n");
 
-  claudeToolCall(systemPrompt, userMessage, srcDir);
+  const t0 = Date.now();
+  try {
+    await claudeToolCallAsync(systemPrompt, userMessage, srcDir,
+      (u) => logTokens(runDir, "Build", `Implementation [${task.id}]`, u));
+  } catch (err) {
+    display.log(`  ${A.red("✗")} [${task.id}] ${task.name} — agent error: ${err.message.slice(0, 80)}`);
+    writeJSON(taskStatusPath, { status: "failed", error: err.message, attempt });
+    logEvent(runDir, { phase: "build", event: "task-failed", taskId: task.id, attempt });
+    return false;
+  }
+  const elapsed = formatElapsed(Date.now() - t0);
+  logTime(runDir, "Build", `Implementation [${task.id}]`, Date.now() - t0);
 
   // Verify expected outputs exist
   const missing = [];
   for (const expectedPath of task.expectedOutputs) {
-    const fullPath = path.join(srcDir, expectedPath);
-    if (!fileExists(fullPath)) {
-      missing.push(expectedPath);
-    }
+    if (!fileExists(path.join(srcDir, expectedPath))) missing.push(expectedPath);
   }
 
   if (missing.length > 0) {
-    ticker.fail(`missing outputs: ${missing.join(", ")}`);
+    const retryNote = attempt > 1 ? ` (attempt ${attempt}/${RETRY_BUDGET})` : "";
+    display.log(`  ${A.red("✗")} [${task.id}] ${task.name} — missing: ${missing.join(", ")}${retryNote}  ${A.dim(elapsed)}`);
     writeJSON(taskStatusPath, { status: "failed", missing, attempt });
     logEvent(runDir, { phase: "build", event: "task-failed", taskId: task.id, missing, attempt });
     return false;
   }
 
-  // Record completed outputs for downstream tasks
   writeJSON(path.join(buildDir, `task-${task.id}-outputs.json`), task.expectedOutputs);
   writeJSON(taskStatusPath, { status: "complete", attempt });
   logEvent(runDir, { phase: "build", event: "task-complete", taskId: task.id, attempt });
-  ticker.done(task.expectedOutputs.join(", "));
+  display.log(`  ${A.green("✓")} [${task.id}] ${task.name} — ${task.expectedOutputs.join(", ")}  ${A.dim(elapsed)}`);
   return true;
 }
 
@@ -326,7 +293,6 @@ async function runTaskGraph(taskGraph, buildDir, buildSpec, architecturePlan, ru
   const completed = new Set();
   const failed = new Map(); // taskId → attempt count
 
-  // Build execution order respecting dependencies
   function getReadyTasks() {
     return taskGraph.filter((task) => {
       if (completed.has(task.id)) return false;
@@ -335,21 +301,22 @@ async function runTaskGraph(taskGraph, buildDir, buildSpec, architecturePlan, ru
     });
   }
 
-  let progress = true;
-  while (progress) {
-    progress = false;
+  while (true) {
     const ready = getReadyTasks();
     if (ready.length === 0) break;
 
-    for (const task of ready) {
+    const label = ready.length === 1
+      ? `[${ready[0].id}] ${ready[0].name}`
+      : `${ready.length} tasks in parallel`;
+    display.update(label);
+
+    await Promise.all(ready.map(async (task) => {
       const attemptNum = (failed.get(task.id) || 0) + 1;
       const previousFailure = failed.has(task.id)
         ? `Task ${task.id} failed on attempt ${failed.get(task.id)}. Expected outputs were missing or incomplete.`
         : null;
 
-      display.update(`[${task.id}] ${task.name}${attemptNum > 1 ? ` (attempt ${attemptNum}/${RETRY_BUDGET})` : ""}`);
-      const success = await executeTask(task, buildDir, buildSpec, architecturePlan, runDir, attemptNum, previousFailure);
-      progress = true;
+      const success = await executeTask(task, buildDir, buildSpec, architecturePlan, runDir, display, attemptNum, previousFailure);
 
       if (success) {
         completed.add(task.id);
@@ -360,7 +327,7 @@ async function runTaskGraph(taskGraph, buildDir, buildSpec, architecturePlan, ru
           logEvent(runDir, { phase: "build", event: "task-budget-exhausted", taskId: task.id });
         }
       }
-    }
+    }));
   }
 
   display.finish(`${completed.size}/${taskGraph.length} tasks`);

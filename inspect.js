@@ -247,6 +247,12 @@ function timeSummary(runDir) {
 // Decision log
 // ---------------------------------------------------------------------------
 
+function readRunMeta(runDir) {
+  const p = path.join(runDir, "run-meta.json");
+  if (!fileExists(p)) return null;
+  try { return readJSON(p); } catch { return null; }
+}
+
 function readDecisionLog(runDir) {
   const logPath = path.join(runDir, "decision-log.jsonl");
   if (!fileExists(logPath)) return [];
@@ -287,10 +293,11 @@ function inspectRun(id, detail = false) {
 
   const manifestPath = path.join(runDir, "handoff", "factory-manifest.json");
   const manifest = fileExists(manifestPath) ? readJSON(manifestPath) : null;
+  const meta = readRunMeta(runDir);
 
   console.log("");
   console.log(`${A.bold("Software Factory")} — Run Inspector`);
-  console.log(`Run:     ${A.cyan(id)}`);
+  console.log(`Run:     ${A.cyan(id)}${meta?.tag ? `  ·  ${A.bold(meta.tag)}` : ""}`);
   if (manifest?.projectName) console.log(`Project: ${manifest.projectName}`);
   console.log("");
 
@@ -405,8 +412,10 @@ function listRuns() {
       .map((fn) => icon(fn(runDir).status))
       .join("  ");
 
+    const meta = readRunMeta(runDir);
+    const tagStr = meta?.tag ? `  ${A.bold(meta.tag)}` : "";
     const project = projectName ? `  ${A.dim(projectName)}` : "";
-    console.log(`  ${icons}  ${A.cyan(id)}${project}`);
+    console.log(`  ${icons}  ${A.cyan(id)}${tagStr}${project}`);
   }
 
   console.log("");
@@ -416,11 +425,277 @@ function listRuns() {
 }
 
 // ---------------------------------------------------------------------------
+// Run comparison
+// ---------------------------------------------------------------------------
+
+function compareRuns(id1, id2, detail = false) {
+  const runDir1 = path.join(RUNS_DIR, id1);
+  const runDir2 = path.join(RUNS_DIR, id2);
+
+  for (const [id, dir] of [[id1, runDir1], [id2, runDir2]]) {
+    if (!fileExists(dir)) { console.error(`Run not found: ${id}`); process.exit(1); }
+  }
+
+  function projectName(dir) {
+    const p = path.join(dir, "handoff", "factory-manifest.json");
+    return fileExists(p) ? (readJSON(p).projectName ?? "") : "";
+  }
+
+  const proj1 = projectName(runDir1);
+  const proj2 = projectName(runDir2);
+  const meta1 = readRunMeta(runDir1);
+  const meta2 = readRunMeta(runDir2);
+
+  function runLabel(id, proj, meta) {
+    const tag = meta?.tag ? `  ${A.bold(meta.tag)}` : "";
+    const p = proj ? `  ${A.dim(proj)}` : "";
+    return `${A.cyan(id)}${tag}${p}`;
+  }
+
+  console.log("");
+  console.log(`${A.bold("Software Factory")} — Run Comparison`);
+  console.log(`  ${runLabel(id1, proj1, meta1)}  →  ${runLabel(id2, proj2, meta2)}`);
+
+  function deltaStr(a, b, fmtFn) {
+    if (a == null || b == null) return A.dim("—");
+    const d = b - a;
+    const pct = a > 0 ? Math.round((d / a) * 100) : 0;
+    const sign = d > 0 ? "+" : "";
+    const str = `${sign}${fmtFn(d)}  ${sign}${pct}%`;
+    return d < 0 ? A.green(str) : d > 0 ? A.red(str) : A.dim(str);
+  }
+
+  // Token comparison (output tokens only — the primary metric)
+  const tok1 = tokenSummary(runDir1);
+  const tok2 = tokenSummary(runDir2);
+  if (tok1 || tok2) {
+    console.log("");
+    console.log(A.dim("  Output tokens") + A.dim(`${" ".repeat(18)}${col(id1.slice(0, 8), 12)}${col(id2.slice(0, 8), 12)}delta`));
+
+    const phases = [...new Set([
+      ...Object.keys(tok1?.byPhase ?? {}),
+      ...Object.keys(tok2?.byPhase ?? {}),
+    ])];
+
+    for (const phase of phases) {
+      const v1 = tok1?.byPhase[phase]?.output ?? null;
+      const v2 = tok2?.byPhase[phase]?.output ?? null;
+      const c1 = v1 != null ? col(n(v1), 12) : col("—", 12);
+      const c2 = v2 != null ? col(n(v2), 12) : col("—", 12);
+      console.log(`  ${A.dim("·")}  ${col(phase, 10)}${A.dim(c1)}${A.dim(c2)}${deltaStr(v1, v2, (d) => n(Math.abs(d)))}`);
+
+      if (detail) {
+        const agents1 = Object.fromEntries((tok1?.byPhase[phase]?.agents ?? []).map((a) => [a.label, a.output]));
+        const agents2 = Object.fromEntries((tok2?.byPhase[phase]?.agents ?? []).map((a) => [a.label, a.output]));
+        const labels = [...new Set([...Object.keys(agents1), ...Object.keys(agents2)])];
+        for (const label of labels) {
+          const a1 = agents1[label] ?? null;
+          const a2 = agents2[label] ?? null;
+          const ac1 = a1 != null ? col(n(a1), 12) : col("—", 12);
+          const ac2 = a2 != null ? col(n(a2), 12) : col("—", 12);
+          console.log(`       ${A.dim(col(label, 28))}${A.dim(ac1)}${A.dim(ac2)}${A.dim(deltaStr(a1, a2, (d) => n(Math.abs(d))))}`);
+        }
+      }
+    }
+
+    const t1 = tok1?.totOut ?? null;
+    const t2 = tok2?.totOut ?? null;
+    const tc1 = t1 != null ? col(n(t1), 12) : col("—", 12);
+    const tc2 = t2 != null ? col(n(t2), 12) : col("—", 12);
+    console.log(`     ${col("Total", 10)}${A.bold(tc1)}${A.bold(tc2)}${deltaStr(t1, t2, (d) => n(Math.abs(d)))}`);
+  }
+
+  // Time comparison
+  const tim1 = timeSummary(runDir1);
+  const tim2 = timeSummary(runDir2);
+  if (tim1 || tim2) {
+    console.log("");
+    console.log(A.dim("  Time") + A.dim(`${" ".repeat(25)}${col(id1.slice(0, 8), 12)}${col(id2.slice(0, 8), 12)}delta`));
+
+    const phases = [...new Set([
+      ...Object.keys(tim1?.byPhase ?? {}),
+      ...Object.keys(tim2?.byPhase ?? {}),
+    ])];
+
+    for (const phase of phases) {
+      const v1 = tim1?.byPhase[phase]?.total ?? null;
+      const v2 = tim2?.byPhase[phase]?.total ?? null;
+      const c1 = v1 != null ? col(fmtMs(v1), 12) : col("—", 12);
+      const c2 = v2 != null ? col(fmtMs(v2), 12) : col("—", 12);
+      console.log(`  ${A.dim("·")}  ${col(phase, 10)}${A.dim(c1)}${A.dim(c2)}${deltaStr(v1, v2, (d) => fmtMs(Math.abs(d)))}`);
+
+      if (detail) {
+        const agents1 = Object.fromEntries((tim1?.byPhase[phase]?.agents ?? []).map((a) => [a.label, a.ms]));
+        const agents2 = Object.fromEntries((tim2?.byPhase[phase]?.agents ?? []).map((a) => [a.label, a.ms]));
+        const labels = [...new Set([...Object.keys(agents1), ...Object.keys(agents2)])];
+        for (const label of labels) {
+          const a1 = agents1[label] ?? null;
+          const a2 = agents2[label] ?? null;
+          const ac1 = a1 != null ? col(fmtMs(a1), 12) : col("—", 12);
+          const ac2 = a2 != null ? col(fmtMs(a2), 12) : col("—", 12);
+          console.log(`       ${A.dim(col(label, 28))}${A.dim(ac1)}${A.dim(ac2)}${A.dim(deltaStr(a1, a2, (d) => fmtMs(Math.abs(d))))}`);
+        }
+      }
+    }
+
+    const t1 = tim1?.totMs ?? null;
+    const t2 = tim2?.totMs ?? null;
+    const tc1 = t1 != null ? col(fmtMs(t1), 12) : col("—", 12);
+    const tc2 = t2 != null ? col(fmtMs(t2), 12) : col("—", 12);
+    console.log(`     ${col("Total", 10)}${A.bold(tc1)}${A.bold(tc2)}${deltaStr(t1, t2, (d) => fmtMs(Math.abs(d)))}`);
+  }
+
+  console.log("");
+}
+
+// ---------------------------------------------------------------------------
+// Trend view
+// ---------------------------------------------------------------------------
+
+function trendView(limit, detail = false) {
+  if (!fileExists(RUNS_DIR)) { console.log("No runs directory found."); return; }
+
+  let ids = fs.readdirSync(RUNS_DIR)
+    .filter((f) => fs.statSync(path.join(RUNS_DIR, f)).isDirectory())
+    .sort();
+
+  if (ids.length === 0) { console.log("No runs found."); return; }
+
+  function runStartTime(runDir) {
+    const logPath = path.join(runDir, "log.jsonl");
+    if (!fileExists(logPath)) return null;
+    const first = fs.readFileSync(logPath, "utf8").trim().split("\n").find(Boolean);
+    try { return new Date(JSON.parse(first).ts); } catch { return null; }
+  }
+
+  ids.sort((a, b) => {
+    const ta = runStartTime(path.join(RUNS_DIR, a));
+    const tb = runStartTime(path.join(RUNS_DIR, b));
+    if (!ta && !tb) return 0;
+    if (!ta) return -1;
+    if (!tb) return 1;
+    return ta - tb;
+  });
+
+  if (limit) ids = ids.slice(-limit);
+
+  function loopCount(runDir) {
+    const logPath = path.join(runDir, "log.jsonl");
+    if (!fileExists(logPath)) return 1;
+    const entries = fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    return 1 + entries.filter((e) => e.event === "loop-back" && e.from === "review").length;
+  }
+
+  const TAG_W = 20;
+
+  const rows = ids.map((id) => {
+    const runDir   = path.join(RUNS_DIR, id);
+    const meta     = readRunMeta(runDir);
+    const tokens   = tokenSummary(runDir);
+    const times    = timeSummary(runDir);
+    const revSt    = reviewStatus(runDir);
+    const divIcons = [designStatus, buildStatus, reviewStatus, securityStatus]
+      .map((fn) => icon(fn(runDir).status)).join("  ");
+    const verdict  = revSt.status === "ship" ? "SHIP"
+      : revSt.status === "no-ship" ? "NO-SHIP"
+      : revSt.status === "not-started" ? "—"
+      : "pending";
+    return { id, divIcons, tag: meta?.tag ?? "", startTime: runStartTime(runDir),
+             totOut: tokens?.totOut ?? null, totMs: times?.totMs ?? null,
+             tokensByPhase: tokens?.byPhase ?? {}, timesByPhase: times?.byPhase ?? {},
+             verdict, loops: loopCount(runDir) };
+  });
+
+  console.log("");
+  console.log(`${A.bold("Software Factory")} — Run Trend  (${ids.length} run${ids.length === 1 ? "" : "s"})`);
+  console.log("");
+  console.log(A.dim(`  ${"D  B  R  S".padEnd(12)}${"Run".padEnd(10)}${"Tag".padEnd(TAG_W + 2)}${"Date".padEnd(14)}${"Tokens".padStart(9)}  ${"Time".padEnd(8)}Verdict`));
+  console.log("");
+
+  for (const r of rows) {
+    const dateStr = r.startTime
+      ? r.startTime.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " +
+        r.startTime.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })
+      : "—";
+    const tokStr    = r.totOut != null ? n(r.totOut).padStart(9) : "        —";
+    const timeStr   = r.totMs  != null ? fmtMs(r.totMs) : "—";
+    const loopStr   = r.loops > 1 ? A.yellow(` ×${r.loops}`) : "";
+    const tagPadded = r.tag ? r.tag.slice(0, TAG_W).padEnd(TAG_W) : " ".repeat(TAG_W);
+    const verdictStr = r.verdict === "SHIP"    ? A.green("SHIP")
+      : r.verdict === "NO-SHIP" ? A.red("NO-SHIP")
+      : A.dim(r.verdict);
+
+    console.log(`  ${r.divIcons}  ${A.cyan(r.id.slice(0, 8))}  ${A.bold(tagPadded)}  ${A.dim(col(dateStr, 14))}${A.dim(tokStr)}  ${A.dim(col(timeStr, 8))}${verdictStr}${loopStr}`);
+  }
+
+  // Summary stats
+  const completed  = rows.filter((r) => r.verdict === "SHIP" || r.verdict === "NO-SHIP");
+  const shipped    = completed.filter((r) => r.verdict === "SHIP");
+  const multiLoop  = rows.filter((r) => r.loops > 1);
+  const withTokens = rows.filter((r) => r.totOut != null);
+  const withTime   = rows.filter((r) => r.totMs  != null);
+
+  console.log("");
+  if (completed.length > 0) {
+    const pct = Math.round((shipped.length / completed.length) * 100);
+    const loopNote = multiLoop.length > 0 ? A.dim(`  ·  ${multiLoop.length} needed multiple loops`) : "";
+    console.log(`  ${A.dim("Ship rate:")}   ${A.bold(`${shipped.length}/${completed.length}`)}  ${A.dim(`(${pct}%)`)}${loopNote}`);
+  }
+  if (withTokens.length > 0) {
+    const avg   = Math.round(withTokens.reduce((s, r) => s + r.totOut, 0) / withTokens.length);
+    const best  = Math.min(...withTokens.map((r) => r.totOut));
+    const worst = Math.max(...withTokens.map((r) => r.totOut));
+    console.log(`  ${A.dim("Avg tokens:")}  ${A.bold(n(avg))}  ${A.dim(`best ${n(best)}  ·  worst ${n(worst)}`)}`);
+    if (detail) {
+      const phases = [...new Set(rows.flatMap((r) => Object.keys(r.tokensByPhase)))];
+      for (const phase of phases) {
+        const vals = rows.map((r) => r.tokensByPhase[phase]?.output).filter((v) => v != null);
+        if (vals.length === 0) continue;
+        const pavg  = Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
+        const pbest = Math.min(...vals);
+        const pworst = Math.max(...vals);
+        console.log(`    ${A.dim(col(phase, 12))}${A.dim(`avg ${n(pavg).padStart(7)}  best ${n(pbest).padStart(7)}  ·  worst ${n(pworst)}`)}`);
+      }
+    }
+  }
+  if (withTime.length > 0) {
+    const avg   = Math.round(withTime.reduce((s, r) => s + r.totMs, 0) / withTime.length);
+    const best  = Math.min(...withTime.map((r) => r.totMs));
+    const worst = Math.max(...withTime.map((r) => r.totMs));
+    console.log(`  ${A.dim("Avg time:")}    ${A.bold(fmtMs(avg))}  ${A.dim(`best ${fmtMs(best)}  ·  worst ${fmtMs(worst)}`)}`);
+    if (detail) {
+      const phases = [...new Set(rows.flatMap((r) => Object.keys(r.timesByPhase)))];
+      for (const phase of phases) {
+        const vals = rows.map((r) => r.timesByPhase[phase]?.total).filter((v) => v != null);
+        if (vals.length === 0) continue;
+        const pavg  = Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
+        const pbest = Math.min(...vals);
+        const pworst = Math.max(...vals);
+        console.log(`    ${A.dim(col(phase, 12))}${A.dim(`avg ${fmtMs(pavg).padStart(6)}  best ${fmtMs(pbest).padStart(6)}  ·  worst ${fmtMs(pworst)}`)}`);
+      }
+    }
+  }
+
+  console.log("");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 const args = process.argv.slice(2);
 const detail = args.includes("--detail") || args.includes("-d");
-const id = args.find((a) => !a.startsWith("-"));
-if (id) inspectRun(id, detail);
-else listRuns();
+const trend  = args.includes("--trend");
+const positional = args.filter((a) => !a.startsWith("-"));
+
+if (trend) {
+  const limit = positional.length > 0 ? parseInt(positional[0], 10) : null;
+  trendView(isNaN(limit) ? null : limit, detail);
+} else if (positional.length >= 2) {
+  compareRuns(positional[0], positional[1], detail);
+} else if (positional.length === 1) {
+  inspectRun(positional[0], detail);
+} else {
+  listRuns();
+}

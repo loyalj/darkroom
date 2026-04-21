@@ -24,7 +24,7 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const crypto = require("crypto");
-const { fileExists, logEvent, writeDecision, readFile, writeFile, buildSystemPrompt, clipForDisplay, question, claudeRaw, claudeCall } = require("./runner-utils");
+const { fileExists, logEvent, writeDecision, readFile, writeFile, buildSystemPrompt, clipForDisplay, question, claudeRaw, claudeCall, claudeTurn, runLockableInterview } = require("./runner-utils");
 const { A, createPhaseDisplay } = require("./display");
 
 const RUNS_DIR    = path.join(__dirname, "runs");
@@ -45,6 +45,7 @@ function parseArgs() {
   const stopAfter = get("--stop-after") ?? null;
   const runId     = get("--run-id") ?? crypto.randomBytes(4).toString("hex");
   const caveman   = args.includes("--caveman");
+  const tag       = get("--tag") ?? null;
 
   // auto mode is live — signals handled for implemented decision points
   if (stopAfter && !DIVISIONS.map((d) => d.toLowerCase()).includes(stopAfter)) {
@@ -52,7 +53,7 @@ function parseArgs() {
     process.exit(1);
   }
 
-  return { mode, stopAfter, runId, caveman };
+  return { mode, stopAfter, runId, caveman, tag };
 }
 
 // ---------------------------------------------------------------------------
@@ -466,15 +467,6 @@ function logTokens(label, usage) {
   fs.appendFileSync(logPath, entry + "\n");
 }
 
-// claudeTurn mirrors the pattern in run-build.js — plain text multi-turn
-function claudeTurn(systemPrompt, history) {
-  const turns = history
-    .map((m) => `${m.role === "assistant" ? "Agent" : "User"}: ${m.content}`)
-    .join("\n\n");
-  const input = history.length === 0 ? "Begin." : `${turns}\n\nRespond as the Agent.`;
-  return claudeRaw(["-p", "--system-prompt", systemPrompt], input);
-}
-
 async function runBrainInterview() {
   if (fileExists(BRAIN_PATH)) {
     console.log(`  ${A.green("✓")}  Brain found — skipping interview\n`);
@@ -521,20 +513,10 @@ async function runBrainInterview() {
   );
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const history = [];
 
   const display = createPhaseDisplay("Leadership", "Brain Interview", "", "thinking...");
   display.log(`\n  ${A.dim("The factory is building your decision-making profile.")}`);
   display.log(`  ${A.dim('When you\'re satisfied, type "lock" to finalize.\n')}`);
-
-  // Opening presentation
-  let agentTurn = claudeTurn(systemPrompt, history);
-  display.update("your turn");
-  display.log(`\nBrain Interviewer: ${clipForDisplay(agentTurn)}\n`);
-  fs.appendFileSync(transcriptPath, `\n## Brain Interviewer\n\n${agentTurn.trim()}\n`);
-  history.push({ role: "assistant", content: agentTurn });
-
-  let lockedOutput = null;
 
   async function executeLock() {
     display.update("locking brain...");
@@ -550,37 +532,14 @@ async function runBrainInterview() {
     return result.output ?? result;
   }
 
-  while (true) {
-    const userInput = await question(rl, "You: ");
-    if (!userInput.trim()) continue;
-
-    if (/^(lock|done|finalize)$/i.test(userInput.trim())) {
-      lockedOutput = await executeLock();
-      break;
-    }
-
-    fs.appendFileSync(transcriptPath, `\n## User\n\n${userInput.trim()}\n`);
-    history.push({ role: "user", content: userInput });
-
-    display.update("thinking...");
-    agentTurn = claudeTurn(systemPrompt, history);
-    display.update("your turn");
-    display.log(`\nBrain Interviewer: ${clipForDisplay(agentTurn)}\n`);
-    fs.appendFileSync(transcriptPath, `\n## Brain Interviewer\n\n${agentTurn.trim()}\n`);
-    history.push({ role: "assistant", content: agentTurn });
-
-    if (/ready to lock the brain/i.test(agentTurn)) {
-      const confirm = await question(rl, "Lock the brain? (yes / keep discussing): ");
-      fs.appendFileSync(transcriptPath, `\n## User\n\n${confirm.trim()}\n`);
-      history.push({ role: "user", content: confirm });
-
-      if (/^(yes|y|lock|ok|do it|go|proceed)/i.test(confirm.trim())) {
-        lockedOutput = await executeLock();
-        break;
-      }
-    }
-  }
-
+  const lockedOutput = await runLockableInterview({
+    systemPrompt, transcriptPath, display, rl,
+    agentName: "Brain Interviewer",
+    lockSignalRe: /ready to lock the brain/i,
+    lockConfirmPrompt: "Lock the brain?",
+    executeLock,
+    onUsage: (u) => logTokens("Brain Interviewer", u),
+  });
   rl.close();
 
   if (!lockedOutput?.brain) {
@@ -652,19 +611,10 @@ async function runRunBrainInterview(runDir, mode = "manual") {
   writeFile(transcriptPath, "# Run Brain Interview Transcript\n");
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const history = [];
 
   const display = createPhaseDisplay("Leadership", "Run Brain", "", "reading specs...");
   display.log(`\n  ${A.dim("Calibrating for this specific project.")}`);
   display.log(`  ${A.dim('Type "lock" when you\'re satisfied.\n')}`);
-
-  let agentTurn = claudeTurn(systemPrompt, history);
-  display.update("your turn");
-  display.log(`\nRun Brain: ${clipForDisplay(agentTurn)}\n`);
-  fs.appendFileSync(transcriptPath, `\n## Run Brain\n\n${agentTurn.trim()}\n`);
-  history.push({ role: "assistant", content: agentTurn });
-
-  let lockedOutput = null;
 
   async function executeLock() {
     display.update("locking run brain...");
@@ -689,37 +639,14 @@ async function runRunBrainInterview(runDir, mode = "manual") {
     return result.output ?? result;
   }
 
-  while (true) {
-    const userInput = await question(rl, "You: ");
-    if (!userInput.trim()) continue;
-
-    if (/^(lock|done|finalize)$/i.test(userInput.trim())) {
-      lockedOutput = await executeLock();
-      break;
-    }
-
-    fs.appendFileSync(transcriptPath, `\n## User\n\n${userInput.trim()}\n`);
-    history.push({ role: "user", content: userInput });
-
-    display.update("thinking...");
-    agentTurn = claudeTurn(systemPrompt, history);
-    display.update("your turn");
-    display.log(`\nRun Brain: ${clipForDisplay(agentTurn)}\n`);
-    fs.appendFileSync(transcriptPath, `\n## Run Brain\n\n${agentTurn.trim()}\n`);
-    history.push({ role: "assistant", content: agentTurn });
-
-    if (/ready to lock the run brain/i.test(agentTurn)) {
-      const confirm = await question(rl, "Lock the run brain? (yes / keep discussing): ");
-      fs.appendFileSync(transcriptPath, `\n## User\n\n${confirm.trim()}\n`);
-      history.push({ role: "user", content: confirm });
-
-      if (/^(yes|y|lock|ok|do it|go|proceed)/i.test(confirm.trim())) {
-        lockedOutput = await executeLock();
-        break;
-      }
-    }
-  }
-
+  const lockedOutput = await runLockableInterview({
+    systemPrompt, transcriptPath, display, rl,
+    agentName: "Run Brain",
+    lockSignalRe: /ready to lock the run brain/i,
+    lockConfirmPrompt: "Lock the run brain?",
+    executeLock,
+    onUsage: (u) => logTokens("Run Brain", u),
+  });
   rl.close();
 
   if (!lockedOutput?.runBrain) {
@@ -927,16 +854,17 @@ function abort(runDir, division, reason, loop) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const { mode, stopAfter, runId, caveman } = parseArgs();
+  const { mode, stopAfter, runId, caveman, tag } = parseArgs();
   const runDir = path.join(RUNS_DIR, runId);
 
   if (caveman) process.env.FACTORY_CAVEMAN = "1";
 
   fs.mkdirSync(runDir, { recursive: true });
-  logEvent(runDir, { phase: "factory", event: "start", mode, stopAfter, caveman });
+  if (tag) writeFile(path.join(runDir, "run-meta.json"), JSON.stringify({ tag, ts: new Date().toISOString() }, null, 2));
+  logEvent(runDir, { phase: "factory", event: "start", mode, stopAfter, caveman, tag });
 
   console.log(`\n${A.bold("Software Factory")} — Pipeline Orchestrator`);
-  console.log(`Run:  ${A.cyan(runId)}`);
+  console.log(`Run:  ${A.cyan(runId)}${tag ? `  ·  ${A.bold(tag)}` : ""}`);
   console.log(`Mode: ${mode}${stopAfter ? `  ·  stopping after ${stopAfter}` : ""}${caveman ? `  ·  ${A.dim("caveman")}` : ""}\n`);
 
   // ── Brain ────────────────────────────────────────────────────────────────
