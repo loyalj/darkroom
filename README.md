@@ -9,6 +9,12 @@ A multi-agent Claude pipeline that takes a software idea from concept to a shipp
 - Node.js
 - Claude Code CLI installed and authenticated (`claude` must be available in your PATH)
 
+After cloning, install dependencies for the GUI server:
+
+```
+npm install
+```
+
 ---
 
 ## Running the Factory
@@ -21,7 +27,7 @@ The orchestrator runs all four divisions in sequence and handles the handoffs be
 node run-factory.js
 ```
 
-**First run only:** The factory will conduct a one-time brain interview before anything else. This builds `brain.md` — your decision-making profile. The orchestrator uses it to make autonomous calls on your behalf in auto mode. Takes 10–20 minutes. Never runs again once the file exists.
+**First run only:** The factory will conduct a one-time brain interview before anything else. This builds `brain.md` — your decision-making profile. The orchestrator uses it to make autonomous calls on your behalf in auto mode. Takes 10–20 minutes. Never runs again once the file exists. Type `lock`, `done`, or `finalize` at any point to end the interview early and proceed with what's been captured. Delete `brain.md` to re-run the interview.
 
 **Options:**
 
@@ -29,10 +35,14 @@ node run-factory.js
 node run-factory.js                           # new run, full pipeline (manual mode)
 node run-factory.js --mode auto               # fully autonomous — factory makes all decisions
 node run-factory.js --run-id <id>             # resume an existing run
+node run-factory.js --tag <label>             # attach a label to the run (visible in inspect and GUI)
 node run-factory.js --stop-after design       # stop after a specific division
 node run-factory.js --stop-after build
 node run-factory.js --stop-after review
+node run-factory.js --caveman                 # enable caveman mode (compressed agent context)
 ```
+
+**Caveman mode** reduces token spend by compressing the context passed between agents. Useful when running many iterations or on a tight budget. Can also be enabled via environment variable: `FACTORY_CAVEMAN=1 node run-factory.js`.
 
 **Manual vs. auto mode:**
 
@@ -44,9 +54,23 @@ node run-factory.js --stop-after review
 **After a run:**
 
 ```
-node inspect.js <run-id>    # detailed status, token usage, decisions made
-node inspect.js             # list all runs
+node inspect.js <run-id>              # detailed status, token usage, decisions made
+node inspect.js <run-id> --detail     # adds per-agent breakdown
+node inspect.js <id1> <id2>           # compare two runs (token and time delta)
+node inspect.js --trend               # all runs chronologically with ship rate and stats
+node inspect.js --trend 10            # last 10 runs only
+node inspect.js --trend --detail      # trend with per-phase breakdown
+node inspect.js                       # list all runs
 ```
+
+**GUI dashboard:**
+
+```
+node run-gui.js             # start the web dashboard at http://localhost:4242
+node run-gui.js --port 8080 # custom port
+```
+
+The dashboard has two tabs: **Run Viewer** (auto-connects to any in-progress run and streams live updates — pipeline progress, token spend, brain decisions, and agent transcripts) and **Run Browser** (browse and inspect all completed runs).
 
 ---
 
@@ -56,6 +80,7 @@ Each division can also be run independently. Pass the same `--run-id` across all
 
 ```
 node run-design.js                          # starts a new run, prints the run ID
+node run-design.js   --run-id <id>          # resume (skips completed phases)
 node run-build.js    --run-id <id>
 node run-review.js   --run-id <id>
 node run-security.js --run-id <id>
@@ -141,7 +166,7 @@ node run-build.js --run-id <id>
 | 6 | Packaging | Agent copies runtime files to `runs/{id}/artifact/` |
 
 **Decision points:**
-- **Phase 1 — Architect Interview:** Discuss the plan. Type `lock` to finalize and begin implementation.
+- **Phase 1 — Architect Interview:** Discuss the plan. Type `lock`, `done`, or `finalize` to end the interview and begin implementation. The agent will also signal when it's ready — you can confirm or keep discussing.
 - **Phase 4 — Copy Review:** Type `yes` to approve, or type feedback to request revisions.
 - **Phase 5 — Verification failures:** Describe what needs fixing if asked. The Fix agent applies changes and re-verifies.
 
@@ -199,15 +224,22 @@ node run-security.js --run-id <id>
 ## Inspecting Runs
 
 ```
-node inspect.js <run-id>    # detailed view
-node inspect.js             # list all runs
+node inspect.js <run-id>              # detailed view
+node inspect.js <run-id> --detail     # adds per-agent token and time breakdown
+node inspect.js <id1> <id2>           # compare two runs side by side
+node inspect.js --trend               # all runs in chronological order
+node inspect.js --trend 10 --detail   # last 10 runs with per-phase stats
+node inspect.js                       # list all runs
 ```
 
 The detailed view shows:
 - Division status (complete / in-progress / not-started / blocked)
-- Token usage by phase
+- Token usage by phase (input + output; cache shown separately)
+- Time per phase
 - Orchestrator decisions (in auto mode) — what was decided, confidence, reasoning summary
 - Pending action items — failure reports or remediations waiting for build
+
+The trend view shows ship rate, average tokens, and average time across runs — useful for evaluating prompt changes or model swaps over time.
 
 ---
 
@@ -251,13 +283,17 @@ runs/{run-id}/
   security-remediations/      Written by Security on BLOCK → consumed by Build fix mode
   run-brain.md                Per-run calibration (created post-Design in orchestrator)
   run-config.json             Structured limits extracted from run brain
+  run-meta.json               Optional tag and start timestamp (written if --tag is passed)
   decision-log.jsonl          Every auto decision made by the orchestrator
   log.jsonl                   Append-only event log
   token-usage.jsonl           Raw token usage (one entry per agent call)
+  time-usage.jsonl            Elapsed time per agent call
 
 brain.md                      Global brain — your decision-making profile (project root)
+brain.example.md              Example brain showing the expected structure and sections
 brain-config.json             Structured limits extracted from global brain
 brain-transcript.md           Brain interview transcript
+brain-token-usage.jsonl       Token usage from brain and run-brain interviews
 accounts/ledger.jsonl         Cross-run token spend history
 ```
 

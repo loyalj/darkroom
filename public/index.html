@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dark Software Factory</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- Sidebar nav -->
+    <nav id="sidebar">
+      <div id="sidebar-header">
+        <h1>Dark Factory</h1>
+        <button id="sidebar-toggle" title="Collapse sidebar">‹</button>
+      </div>
+      <div id="sidebar-nav">
+        <div class="nav-item active" data-view="monitor">Run Viewer</div>
+        <div class="nav-item" data-view="browser">Run Browser</div>
+      </div>
+    </nav>
+
+    <!-- Main content -->
+    <main id="main">
+
+      <!-- ── Live Monitor ── -->
+      <div id="view-monitor" class="view">
+        <div class="panel-header" id="monitor-header">
+          <div class="status-dot idle"></div>
+          <h2>Live Monitor</h2>
+          <span class="subtitle" style="margin-left: auto; color: var(--muted);">Waiting for a run…</span>
+        </div>
+
+        <!-- Pipeline progress bar -->
+        <div id="pipeline-bar">
+          <div class="phase-block"><div class="phase-label">Design</div><div class="phase-icon">○</div></div>
+          <div class="phase-block"><div class="phase-label">Build</div><div class="phase-icon">○</div></div>
+          <div class="phase-block"><div class="phase-label">Review</div><div class="phase-icon">○</div></div>
+          <div class="phase-block"><div class="phase-label">Security</div><div class="phase-icon">○</div></div>
+        </div>
+
+        <!-- Monitor body: left column + document viewer -->
+        <div id="monitor-body">
+
+          <!-- Left column: step + tokens + decisions -->
+          <div id="monitor-left">
+            <div class="section">
+              <div class="section-title">Current Step</div>
+              <div id="current-step">Waiting for a run…</div>
+            </div>
+
+            <div class="section">
+              <div class="section-title">Token Usage</div>
+              <table id="token-table">
+                <tr><td colspan="2" style="color: var(--muted); padding: 4px 0;">No data yet</td></tr>
+              </table>
+            </div>
+
+            <div class="section" style="flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom: none;">
+              <div class="section-title">Brain Decisions</div>
+              <div id="decision-feed">
+                <div style="color: var(--muted); font-size: 12px;">No decisions yet.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Document viewer: tab strip + content -->
+          <div id="monitor-right">
+            <div id="tab-strip">
+              <div id="category-row">
+                <button id="auto-btn" class="auto-active" title="Auto-follow active transcript">Auto</button>
+              </div>
+              <div id="file-row"></div>
+            </div>
+            <div id="doc-body">
+              <div class="empty-state">
+                <span>Select a run to view documents</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ── Run Browser ── -->
+      <div id="view-browser" class="view">
+        <div class="panel-header">
+          <h2>Run Browser</h2>
+          <span class="subtitle">All runs — click to open in Live Monitor</span>
+        </div>
+        <div id="run-list-body">
+          <div style="color: var(--muted); padding: 20px;">Loading…</div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node \"d:/Coding/dark-room/inspect.js\" 756f62e5)"
+      "Bash(node \"d:/Coding/dark-room/inspect.js\" 756f62e5)",
+      "Bash(node run-gui.js)",
+      "Bash(start http://localhost:4242)"
     ]
   }
 }
