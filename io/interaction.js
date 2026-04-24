@@ -16,8 +16,8 @@ function createInteraction(adapter) {
      * @param {string} prompt  Text shown to the user.
      * @returns {Promise<string>}
      */
-    turn(prompt) {
-      return adapter.turn(prompt);
+    turn(prompt, opts) {
+      return adapter.turn(prompt, opts);
     },
 
     /**

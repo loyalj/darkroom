@@ -22,6 +22,8 @@ const state = {
   activeCategory: null,  // currently selected category label
   activeTabKey: null,    // currently displayed tab key
   pinnedTabKey: null,    // null = auto-follow transcripts
+  // Factory input chat pane
+  pendingInput: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -370,6 +372,7 @@ function connectRun(runId) {
   state.pinnedTabKey = null;
   state.tokenLimit = null;
   state.tokenLimitSource = null;
+  hideInputPane();
 
   // Fetch meta for tag display
   fetch(`/api/runs/${runId}`)
@@ -392,6 +395,7 @@ function connectRun(runId) {
       state.fileCategories = msg.files ?? [];
       state.tokenLimit = msg.tokenLimit ?? null;
       state.tokenLimitSource = msg.tokenLimitSource ?? null;
+      if (msg.pendingInput) showInputPane(msg.pendingInput.prompt);
       renderAll();
 
     } else if (msg.type === "log") {
@@ -412,6 +416,9 @@ function connectRun(runId) {
     } else if (msg.type === "files") {
       state.fileCategories = msg.files ?? [];
       renderTabStrip(state.fileCategories);
+
+    } else if (msg.type === "pending-input") {
+      showInputPane(msg.prompt);
 
     } else if (msg.type === "transcript") {
       const key = transcriptKey(msg.name);
@@ -479,6 +486,7 @@ function showIdleState() {
   $("#file-row").innerHTML = "";
   $("#doc-body").className = "";
   $("#doc-body").innerHTML = `<div class="empty-state"><span>No run in progress</span><span class="hint">Start the factory to begin monitoring</span></div>`;
+  hideInputPane();
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +553,53 @@ async function loadRunList() {
 }
 
 // ---------------------------------------------------------------------------
+// Factory input chat pane
+// ---------------------------------------------------------------------------
+
+function showInputPane(prompt) {
+  state.pendingInput = prompt;
+  const pane = $("#chat-pane");
+  pane.classList.remove("idle");
+  pane.classList.add("active");
+  $("#chat-query").textContent = prompt;
+  const field = $("#chat-field");
+  field.value = "";
+  field.disabled = false;
+  field.placeholder = "Type your response… (Ctrl+Enter to send)";
+  $("#chat-submit").disabled = false;
+  setTimeout(() => field.focus(), 50);
+}
+
+function hideInputPane() {
+  state.pendingInput = null;
+  const pane = $("#chat-pane");
+  pane.classList.remove("active");
+  pane.classList.add("idle");
+  $("#chat-query").textContent = "";
+  const field = $("#chat-field");
+  field.value = "";
+  field.disabled = true;
+  field.placeholder = "Waiting for factory…";
+  $("#chat-submit").disabled = true;
+}
+
+function submitInputPane() {
+  const response = $("#chat-field").value.trim();
+  if (!response || !state.activeRunId) return;
+
+  const btn = $("#chat-submit");
+  btn.disabled = true;
+
+  fetch(`/api/runs/${state.activeRunId}/respond`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ response }),
+  })
+    .then(() => hideInputPane())
+    .catch(() => { btn.disabled = false; });
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
@@ -571,6 +626,25 @@ document.addEventListener("DOMContentLoaded", () => {
     state.pinnedTabKey = null;
     updateAutoBtn();
   });
+
+  // Chat input pane
+  $("#chat-submit").addEventListener("click", submitInputPane);
+  $("#chat-field").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submitInputPane();
+  });
+
+  // Chat pane drag-to-resize
+  let dragStart = null;
+  $("#chat-resize").addEventListener("mousedown", (e) => {
+    dragStart = { y: e.clientY, h: $("#chat-pane").offsetHeight };
+    e.preventDefault();
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (!dragStart) return;
+    const newH = Math.max(90, Math.min(600, dragStart.h + (dragStart.y - e.clientY)));
+    $("#chat-pane").style.height = newH + "px";
+  });
+  document.addEventListener("mouseup", () => { dragStart = null; });
 
   setView("monitor");
   detectActiveRun();

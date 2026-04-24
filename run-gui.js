@@ -26,6 +26,7 @@ const PORT = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 4242;
 
 const app = express();
 app.use(express.static(PUBLIC_DIR));
+app.use(express.json());
 
 // ---------------------------------------------------------------------------
 // Data helpers
@@ -375,6 +376,24 @@ app.get("/api/active", (req, res) => {
   res.json({ id: mostActiveRunId() });
 });
 
+// Submit a response to the factory's pending input point.
+app.post("/api/runs/:id/respond", (req, res) => {
+  const { id } = req.params;
+  const { response } = req.body ?? {};
+  if (typeof response !== "string") return res.status(400).json({ error: "response required" });
+
+  const dir = path.join(RUNS_DIR, id);
+  if (!fs.existsSync(dir)) return res.status(404).json({ error: "not found" });
+
+  const responsePath = path.join(dir, "input-response.json");
+  try {
+    fs.writeFileSync(responsePath, JSON.stringify({ response }), "utf8");
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // SSE stream — sends snapshot then streams changes for a specific run.
 app.get("/api/runs/:id/stream", (req, res) => {
   const { id } = req.params;
@@ -390,8 +409,15 @@ app.get("/api/runs/:id/stream", (req, res) => {
   const files = getRunFiles(dir);
   const { limit: tokenLimit, source: tokenLimitSource } = readBudgetLimit(dir);
 
+  // Check for a pending factory input point at snapshot time
+  let pendingInput = null;
+  const pendingInputPath = path.join(dir, "pending-input.json");
+  if (fs.existsSync(pendingInputPath)) {
+    try { pendingInput = JSON.parse(fs.readFileSync(pendingInputPath, "utf8")); } catch {}
+  }
+
   // Initial snapshot — includes file manifest and active transcript name
-  sseSend(res, "snapshot", { id, logEvents, tokens, decisions, state, files, tokenLimit, tokenLimitSource });
+  sseSend(res, "snapshot", { id, logEvents, tokens, decisions, state, files, tokenLimit, tokenLimitSource, pendingInput });
 
   // Send the name of the most recently modified transcript so client auto-loads it
   function sendActiveTranscript() {
@@ -455,6 +481,15 @@ app.get("/api/runs/:id/stream", (req, res) => {
   // Also watch the artifact directory for new files
   const stopArtifactWatch = createFileWatcher(path.join(dir, "artifact"), sendFiles);
 
+  // Watch for pending factory input points
+  const stopPendingInput = createFileWatcher(pendingInputPath, () => {
+    if (!fs.existsSync(pendingInputPath)) return;
+    try {
+      const data = JSON.parse(fs.readFileSync(pendingInputPath, "utf8"));
+      sseSend(res, "pending-input", { prompt: data.prompt });
+    } catch {}
+  });
+
   const heartbeat = setInterval(() => res.write(": ping\n\n"), 15000);
 
   req.on("close", () => {
@@ -462,6 +497,7 @@ app.get("/api/runs/:id/stream", (req, res) => {
     stopTranscripts.forEach((s) => s());
     stopFileWatchers.forEach((s) => s());
     stopArtifactWatch();
+    stopPendingInput();
     clearInterval(heartbeat);
   });
 });

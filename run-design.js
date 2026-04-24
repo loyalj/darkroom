@@ -22,6 +22,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
+const { fileAdapter } = require("./io/adapters/file");
 const { createPhaseDisplay, createTicker } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
 const { readFile, writeFile, buildSystemPrompt, logEvent, claudeCall, claudeTurn } = require("./runner-utils");
@@ -72,7 +73,7 @@ async function runInterviewPhase(io, display, agentPromptPath, systemContext, tr
   conversationHistory.push({ role: "assistant", content: agentTurn });
 
   while (true) {
-    const userInput = await io.turn("You: ");
+    const userInput = await io.turn("You: ", { context: agentTurn });
     if (!userInput.trim()) continue;
 
     appendTranscript(transcriptPath, "User", userInput);
@@ -104,7 +105,7 @@ async function runClarificationRound(io, issues, transcriptPath, display) {
     display.log(`[${issue.id.toUpperCase()}] ${issue.summary}`);
     display.log(`\nQuestion: ${issue.question}\n`);
 
-    const answer = await io.turn("Your answer: ");
+    const answer = await io.turn("Your answer: ", { context: issue.question });
     appendTranscript(transcriptPath, `Clarification [${issue.id}]`, issue.question);
     appendTranscript(transcriptPath, "User", answer);
     display.log("");
@@ -120,7 +121,9 @@ async function main() {
   const resumeIndex = args.indexOf("--run-id");
   const id = resumeIndex >= 0 ? args[resumeIndex + 1] : runId();
   const runDir = path.join(RUNS_DIR, id);
-  const io = createInteraction(cliAdapter());
+  const io = process.env.DARK_ROOM_IO === "file"
+    ? createInteraction(fileAdapter(runDir))
+    : createInteraction(cliAdapter());
 
   fs.mkdirSync(path.join(runDir, "handoff"), { recursive: true });
 

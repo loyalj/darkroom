@@ -26,11 +26,17 @@ const crypto = require("crypto");
 const { fileExists, logEvent, writeDecision, readFile, writeFile, buildSystemPrompt, clipForDisplay, claudeRaw, claudeCall, claudeTurn, runLockableInterview } = require("./runner-utils");
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
+const { fileAdapter } = require("./io/adapters/file");
 const { A, createPhaseDisplay } = require("./display");
 
 // Module-level io and mode — set once in main(), shared by escalate(), checkBudget(), etc.
 let io   = null;
 let mode = "manual";
+
+function createIO(runDir) {
+  if (process.env.DARK_ROOM_IO === "file") return createInteraction(fileAdapter(runDir));
+  return createInteraction(cliAdapter());
+}
 
 const RUNS_DIR    = path.join(__dirname, "runs");
 const BRAIN_PATH  = path.join(__dirname, "brain.md");
@@ -51,6 +57,7 @@ function parseArgs() {
   const runId     = get("--run-id") ?? crypto.randomBytes(4).toString("hex");
   const caveman   = args.includes("--caveman");
   const tag       = get("--tag") ?? null;
+  const io        = get("--io") ?? null;
 
   // auto mode is live — signals handled for implemented decision points
   if (stopAfter && !DIVISIONS.map((d) => d.toLowerCase()).includes(stopAfter)) {
@@ -58,7 +65,7 @@ function parseArgs() {
     process.exit(1);
   }
 
-  return { mode, stopAfter, runId, caveman, tag };
+  return { mode, stopAfter, runId, caveman, tag, io };
 }
 
 // ---------------------------------------------------------------------------
@@ -472,7 +479,7 @@ function logTokens(label, usage) {
   fs.appendFileSync(logPath, entry + "\n");
 }
 
-async function runBrainInterview() {
+async function runBrainInterview(runDir) {
   if (fileExists(BRAIN_PATH)) {
     console.log(`  ${A.green("✓")}  Brain found — skipping interview\n`);
     return;
@@ -517,7 +524,7 @@ async function runBrainInterview() {
     readFile(path.join(AGENTS_DIR, "leadership", "brain-interviewer.md"))
   );
 
-  const io = createInteraction(cliAdapter());
+  const io = createIO(runDir);
 
   const display = createPhaseDisplay("Leadership", "Brain Interview", "", "thinking...");
   display.log(`\n  ${A.dim("The factory is building your decision-making profile.")}`);
@@ -615,7 +622,7 @@ async function runRunBrainInterview(runDir, mode = "manual") {
   const transcriptPath = path.join(runDir, "run-brain-transcript.md");
   writeFile(transcriptPath, "# Run Brain Interview Transcript\n");
 
-  const io = createInteraction(cliAdapter());
+  const io = createIO(runDir);
 
   const display = createPhaseDisplay("Leadership", "Run Brain", "", "reading specs...");
   display.log(`\n  ${A.dim("Calibrating for this specific project.")}`);
@@ -902,10 +909,11 @@ function abort(runDir, division, reason, loop) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const { mode: parsedMode, stopAfter, runId, caveman, tag } = parseArgs();
+  const { mode: parsedMode, stopAfter, runId, caveman, tag, io: ioFlag } = parseArgs();
   mode = parsedMode;
+  if (ioFlag === "file") process.env.DARK_ROOM_IO = "file";
   const runDir = path.join(RUNS_DIR, runId);
-  io = createInteraction(cliAdapter());
+  io = createIO(runDir);
 
   if (caveman) process.env.FACTORY_CAVEMAN = "1";
 
@@ -919,7 +927,7 @@ async function main() {
 
   // ── Brain ────────────────────────────────────────────────────────────────
 
-  await runBrainInterview();
+  await runBrainInterview(runDir);
 
   // ── Design ──────────────────────────────────────────────────────────────
 
