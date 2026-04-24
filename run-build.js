@@ -20,10 +20,11 @@
 
 const fs = require("fs");
 const path = require("path");
-const readline = require("readline");
-const { createPhaseDisplay, agentStream, A, formatElapsed } = require("./display");
+const { createInteraction } = require("./io/interaction");
+const { cliAdapter } = require("./io/adapters/cli");
+const { createPhaseDisplay, createPlainDisplay, agentStream, A, formatElapsed } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, question, hr, claudeRaw, claudeCall, claudeTurn, runLockableInterview, claudeToolCallAsync, collectSourceFiles } = require("./runner-utils");
+const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, writeDecision, hr, claudeRaw, claudeCall, claudeTurn, runLockableInterview, claudeToolCallAsync, collectSourceFiles } = require("./runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -80,6 +81,14 @@ async function runArchitectAutoLoop(runDir, architectSystemPrompt, history, firs
     // Check for lock approval
     if (/^\s*lock\s*$/im.test(reviewerResponse)) {
       console.log(`\n  ${A.cyan("●")}  Brain approved architect plan (turn ${turn})\n`);
+      writeDecision(runDir, {
+        decisionPoint: "architect-plan",
+        evidence: `Architect plan reviewed over ${turn} turn(s)`,
+        brainContext: "(architect-reviewer)",
+        decision: "approve",
+        reasoning: `Brain approved after ${turn} review turn(s).`,
+        humanOverride: false,
+      });
       return await executeLock();
     }
 
@@ -103,6 +112,14 @@ async function runArchitectAutoLoop(runDir, architectSystemPrompt, history, firs
 
   // Loop limit — lock anyway (brain had enough turns)
   console.log(`\n  ${A.yellow("⚠")}  Architect review loop limit reached — locking plan.\n`);
+  writeDecision(runDir, {
+    decisionPoint: "architect-plan",
+    evidence: `Architect plan reviewed over ${ARCHITECT_AUTO_MAX_TURNS} turn(s)`,
+    brainContext: "(architect-reviewer)",
+    decision: "approve",
+    reasoning: `Loop limit reached after ${ARCHITECT_AUTO_MAX_TURNS} turns — locking plan.`,
+    humanOverride: false,
+  });
   return await executeLock();
 }
 
@@ -110,7 +127,7 @@ async function runArchitectAutoLoop(runDir, architectSystemPrompt, history, firs
 // Architect interview
 // ---------------------------------------------------------------------------
 
-async function runArchitectInterview(runDir, buildSpec, factoryManifest) {
+async function runArchitectInterview(io, runDir, buildSpec, factoryManifest) {
   const transcriptPath = path.join(runDir, "architect-transcript.md");
   const planPath = path.join(runDir, "build", "architecture-plan.md");
 
@@ -129,8 +146,6 @@ async function runArchitectInterview(runDir, buildSpec, factoryManifest) {
     `## Build Spec\n\n${buildSpec}`,
     `## Factory Manifest\n\n${JSON.stringify(factoryManifest, null, 2)}`
   );
-
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   const display = createPhaseDisplay("Build", "Architect Interview", "1 of 6", "thinking...", { onFinish: (ms) => logTime(runDir, "Build", "Architect Interview", ms) });
   display.log('\n  When you are satisfied with the plan, type "lock" to finalize.\n');
@@ -156,7 +171,6 @@ async function runArchitectInterview(runDir, buildSpec, factoryManifest) {
   }
 
   if (process.env.FACTORY_AUTO === "1") {
-    rl.close();
     display.update("thinking...");
     const firstTurn = claudeTurn(systemPrompt, [], (u) => logTokens(runDir, "Build", "Architect Interview", u));
     display.update("your turn");
@@ -167,14 +181,13 @@ async function runArchitectInterview(runDir, buildSpec, factoryManifest) {
     );
   } else {
     lockedOutput = await runLockableInterview({
-      systemPrompt, transcriptPath, display, rl,
+      systemPrompt, transcriptPath, display, io,
       agentName: "Architect",
       lockSignalRe: /ready to lock the plan/i,
       lockConfirmPrompt: "Lock the plan?",
       executeLock,
       onUsage: (u) => logTokens(runDir, "Build", "Architect Interview", u),
     });
-    rl.close();
   }
 
   if (!lockedOutput || !lockedOutput.architecturePlan || !lockedOutput.taskGraph) {
@@ -283,7 +296,7 @@ async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, 
   return true;
 }
 
-async function runTaskGraph(taskGraph, buildDir, buildSpec, architecturePlan, runDir) {
+async function runTaskGraph(io, taskGraph, buildDir, buildSpec, architecturePlan, runDir) {
   const display = createPhaseDisplay(
     "Build", "Implementation", "2 of 6",
     `${taskGraph.length} task${taskGraph.length === 1 ? "" : "s"}`,
@@ -339,9 +352,7 @@ async function runTaskGraph(taskGraph, buildDir, buildSpec, architecturePlan, ru
     console.error(`Failed tasks: ${exhausted.map((t) => t.id).join(", ")}`);
     logEvent(runDir, { phase: "build", event: "build-blocked", failedTasks: exhausted.map((t) => t.id) });
 
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const decision = await question(rl, "\nPress Enter to exit and inspect, or type 'continue' to proceed with partial build: ");
-    rl.close();
+    const decision = await io.turn("\nPress Enter to exit and inspect, or type 'continue' to proceed with partial build: ");
     if (!decision.trim().toLowerCase().startsWith("continue")) {
       process.exit(1);
     }
@@ -395,7 +406,7 @@ async function runIntegration(buildDir, buildSpec, architecturePlan, runDir) {
 // Copy writer + human approval
 // ---------------------------------------------------------------------------
 
-async function runCopyWriter(buildDir, buildSpec, runDir) {
+async function runCopyWriter(io, buildDir, buildSpec, runDir) {
   const copyApprovedPath = path.join(buildDir, "copy-approved.flag");
   if (fileExists(copyApprovedPath)) {
     console.log("Copy already approved — skipping.\n");
@@ -433,12 +444,11 @@ async function runCopyWriter(buildDir, buildSpec, runDir) {
   console.log(readFile(copyReviewPath));
   console.log(`\n${"=".repeat(60)}\n`);
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let approved = false;
 
   while (!approved) {
     if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"copy-review"}\n');
-    const input = await question(rl, "Approve copy? (yes / no + feedback): ");
+    const input = await io.turn("Approve copy? (yes / no + feedback): ");
     const trimmed = input.trim().toLowerCase();
 
     if (trimmed === "yes" || trimmed === "y") {
@@ -475,7 +485,6 @@ async function runCopyWriter(buildDir, buildSpec, runDir) {
     }
   }
 
-  rl.close();
   console.log("\nCopy approved.\n");
 }
 
@@ -568,47 +577,32 @@ async function runVerification(buildDir, buildSpec, runDir) {
 // ---------------------------------------------------------------------------
 
 async function runVerificationLoop(buildDir, buildSpecPath, runDir) {
+  const reportPath = path.join(buildDir, "verification-report.json");
+  const feedbackPath = path.join(buildDir, "verification-feedback.json");
+  const feedbackNeededPath = path.join(buildDir, "verification-feedback-needed.json");
+
+  // On resume after human feedback: apply the fix before re-verifying.
+  if (fileExists(feedbackPath) && fileExists(reportPath)) {
+    const { feedback } = readJSON(feedbackPath);
+    fs.unlinkSync(feedbackPath);
+    const report = readJSON(reportPath);
+    logEvent(runDir, { phase: "build", event: "verification-human-feedback", feedback });
+    await runFixAgent(buildDir, buildSpecPath, report, feedback, runDir);
+    if (fileExists(reportPath)) fs.unlinkSync(reportPath);
+  }
+
   while (true) {
     const currentSpec = readFile(buildSpecPath);
     const passed = await runVerification(buildDir, currentSpec, runDir);
     if (passed) return;
 
-    // Human checkpoint
-    const reportPath = path.join(buildDir, "verification-report.json");
     const report = readJSON(reportPath);
     const failures = report.results.filter((r) => r.status === "fail");
 
-    console.log(`\n${"=".repeat(60)}`);
-    console.log("  VERIFICATION FAILURES — Human Input Required");
-    console.log(`${"=".repeat(60)}\n`);
-
-    for (const f of failures) {
-      console.log(`  [FAIL] Criterion ${f.criterionId}: ${f.description}`);
-      console.log(`         Expected: ${f.expected}`);
-      console.log(`         Observed: ${f.observed}\n`);
-    }
-
-    console.log("Describe what needs to be fixed.");
-    console.log("Examples:");
-    console.log("  - 'Criterion 5 is wrong — HeLLo should produce UrYYb, not UryYb'");
-    console.log("  - 'The ROT13 logic is broken for uppercase letters'");
-    console.log("  - 'Both: criterion 5 has the wrong expected value, and criterion 7 has a code bug'\n");
-
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const feedback = await question(rl, "Your feedback: ");
-    rl.close();
-
-    if (!feedback.trim()) {
-      console.log("No feedback provided. Exiting.");
-      process.exit(1);
-    }
-
-    logEvent(runDir, { phase: "build", event: "verification-human-feedback", feedback });
-
-    await runFixAgent(buildDir, buildSpecPath, report, feedback, runDir);
-
-    // Clear report so verification re-runs fresh
-    if (fileExists(reportPath)) fs.unlinkSync(reportPath);
+    // Signal the parent process (run-factory.js) that human feedback is needed.
+    // Feedback collection happens there because its readline is uncorrupted.
+    writeJSON(feedbackNeededPath, { failures });
+    process.exit(43);
   }
 }
 
@@ -634,6 +628,7 @@ async function runFixAgent(buildDir, buildSpecPath, verificationReport, humanFee
   ].join("\n\n---\n\n");
 
   const display = createPhaseDisplay("Build", "Fix", "5 of 6", "applying fixes", { onFinish: (ms) => logTime(runDir, "Build", "Fix", ms) });
+  display.log("  Feedback received — Claude is reading the code and applying the fix. This may take a few minutes.\n");
   await agentStream(systemPrompt, userMessage, buildDir, display, { onUsage: (u) => logTokens(runDir, "Build", "Fix", u) });
   display.finish("fixes applied");
   logEvent(runDir, { phase: "build", event: "fix-applied", feedback: humanFeedback });
@@ -716,7 +711,7 @@ function clearStaleReviewResults(runDir) {
   }
 }
 
-async function runIncomingFixMode(buildDir, buildSpecPath, incomingFailures, runDir) {
+async function runIncomingFixMode(io, buildDir, buildSpecPath, incomingFailures, runDir) {
   console.log(`\n${hr()}`);
   console.log("  Fix Mode — Applying fixes from other divisions");
   console.log(`${hr()}\n`);
@@ -731,9 +726,7 @@ async function runIncomingFixMode(buildDir, buildSpecPath, incomingFailures, run
     return `### From ${f.source} division\n\n${content}`;
   }).join("\n\n---\n\n");
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const humanNotes = await question(rl, "Any additional guidance for the fix agent? (press Enter to skip): ");
-  rl.close();
+  const humanNotes = await io.turn("Any additional guidance for the fix agent? (press Enter to skip): ");
 
   const display = createPhaseDisplay(
     "Build", "Fix Mode", "", `${incomingFailures.length} failure report(s)`,
@@ -789,6 +782,7 @@ async function main() {
 
   const id = args[runIdIndex + 1];
   const runDir = path.join(RUNS_DIR, id);
+  const io = createInteraction(cliAdapter());
   const handoffDir = path.join(runDir, "handoff");
   const buildDir = path.join(runDir, "build");
   const artifactDir = path.join(runDir, "artifact");
@@ -810,7 +804,12 @@ async function main() {
   console.log(`Run: ${id}`);
   console.log(`Project: ${factoryManifest.projectName}\n`);
 
-  logEvent(runDir, { phase: "build", event: "start" });
+  // Only log 'start' on a fresh build so the GUI step doesn't reset to
+  // "Architect Interview" when build is re-invoked for verification feedback
+  // or review/security fix loops.
+  if (!fileExists(path.join(buildDir, "architecture-plan.md"))) {
+    logEvent(runDir, { phase: "build", event: "start" });
+  }
 
   const buildSpecPath = path.join(handoffDir, "build-spec.md");
 
@@ -824,7 +823,7 @@ async function main() {
     for (const f of incomingFailures) console.log(`  [${f.source}] ${f.label}`);
     console.log("");
 
-    await runIncomingFixMode(buildDir, buildSpecPath, incomingFailures, runDir);
+    await runIncomingFixMode(io, buildDir, buildSpecPath, incomingFailures, runDir);
 
     // Delete old artifact and re-package after fixes
     const manifestPath = path.join(artifactDir, "MANIFEST.txt");
@@ -842,20 +841,21 @@ async function main() {
     console.log(`${hr()}\n`);
     console.log("Proceed to review: node run-review.js --run-id " + id + "\n");
     logEvent(runDir, { phase: "build", event: "build-division-complete", mode: "fix" });
+    io.close();
     return;
   }
 
   // Phase 1: Architect interview
-  const { architecturePlan, taskGraph } = await runArchitectInterview(runDir, buildSpec, factoryManifest);
+  const { architecturePlan, taskGraph } = await runArchitectInterview(io, runDir, buildSpec, factoryManifest);
 
   // Phase 2: Task execution
-  await runTaskGraph(taskGraph, buildDir, buildSpec, architecturePlan, runDir);
+  await runTaskGraph(io, taskGraph, buildDir, buildSpec, architecturePlan, runDir);
 
   // Phase 3: Integration
   await runIntegration(buildDir, buildSpec, architecturePlan, runDir);
 
   // Phase 4: Copy writer + human approval
-  await runCopyWriter(buildDir, buildSpec, runDir);
+  await runCopyWriter(io, buildDir, buildSpec, runDir);
 
   // Phase 5: Verification with human-in-the-loop checkpoint
   await runVerificationLoop(buildDir, buildSpecPath, runDir);
@@ -875,6 +875,7 @@ async function main() {
   console.log("Proceed to review: node run-review.js --run-id " + id + "\n");
 
   logEvent(runDir, { phase: "build", event: "build-division-complete" });
+  io.close();
 }
 
 main().catch((err) => {

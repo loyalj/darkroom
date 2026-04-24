@@ -20,10 +20,11 @@
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const readline = require("readline");
+const { createInteraction } = require("./io/interaction");
+const { cliAdapter } = require("./io/adapters/cli");
 const { createPhaseDisplay, agentStream, A, formatElapsed } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall, claudeToolCallAsync, extractCompact } = require("./runner-utils");
+const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, claudeCall, claudeToolCallAsync, extractCompact } = require("./runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -438,7 +439,7 @@ async function runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir, cavem
 // Phase 6: Human approval
 // ---------------------------------------------------------------------------
 
-async function humanApproval(verdictReport, reviewDir, runDir) {
+async function humanApproval(io, verdictReport, reviewDir, runDir) {
   console.log(`\n${"=".repeat(60)}`);
   console.log("  VERDICT — Human Approval Required");
   console.log(`${"=".repeat(60)}\n`);
@@ -446,8 +447,6 @@ async function humanApproval(verdictReport, reviewDir, runDir) {
   console.log(`\n${"=".repeat(60)}\n`);
 
   const isNoShip = verdictReport.match(/^#\s*Verdict:\s*NO-SHIP/im);
-
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   if (isNoShip) {
     console.log("The verdict is NO-SHIP.\n");
@@ -457,25 +456,23 @@ async function humanApproval(verdictReport, reviewDir, runDir) {
     let resolved = false;
     while (!resolved) {
       if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"review-verdict-no-ship"}\n');
-      const input = await question(rl, "Choice: ");
+      const input = await io.turn("Choice: ");
       const trimmed = input.trim().toLowerCase();
 
       if (trimmed === "" || trimmed === "accept") {
-        rl.close();
         writeFailureReports(reviewDir, runDir);
         logEvent(runDir, { phase: "review", event: "ship-rejected-no-ship" });
         return false;
       } else if (trimmed.startsWith("override")) {
         // Supports both "override" (interactive) and "override: <reason>" (orchestrator inline)
         const inlineReason = trimmed.slice("override".length).replace(/^[\s:]+/, "").trim();
-        const reason = inlineReason || (await question(rl, "Override reason (will be logged): ")).trim();
+        const reason = inlineReason || (await io.turn("Override reason (will be logged): ")).trim();
         if (!reason) {
           console.log("A reason is required to override.\n");
           continue;
         }
         logEvent(runDir, { phase: "review", event: "ship-approved-override", verdictOverridden: "NO-SHIP", reason });
         console.log("\nVerdict overridden. Shipping.\n");
-        rl.close();
         return true;
       }
     }
@@ -484,7 +481,7 @@ async function humanApproval(verdictReport, reviewDir, runDir) {
   let approved = false;
   while (!approved) {
     if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"review-verdict-ship"}\n');
-    const input = await question(rl, "Approve and ship? (yes / no): ");
+    const input = await io.turn("Approve and ship? (yes / no): ");
     const trimmed = input.trim().toLowerCase();
 
     if (trimmed === "yes" || trimmed === "y") {
@@ -492,15 +489,13 @@ async function humanApproval(verdictReport, reviewDir, runDir) {
       logEvent(runDir, { phase: "review", event: "ship-approved" });
       console.log("\nShip approved.\n");
     } else if (trimmed === "no" || trimmed === "n") {
-      const reason = await question(rl, "Reason (will be logged): ");
+      const reason = await io.turn("Reason (will be logged): ");
       logEvent(runDir, { phase: "review", event: "ship-rejected", reason });
       writeFailureReports(reviewDir, runDir);
-      rl.close();
       return false;
     }
   }
 
-  rl.close();
   return true;
 }
 
@@ -619,7 +614,9 @@ async function main() {
   const verdictReport = await runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir, caveman);
 
   // Phase 6: Human approval
-  const shipped = await humanApproval(verdictReport, reviewDir, runDir);
+  const io = createInteraction(cliAdapter());
+  const shipped = await humanApproval(io, verdictReport, reviewDir, runDir);
+  io.close();
 
   writeTokenTable(runDir);
   writeTimeTable(runDir);

@@ -22,10 +22,15 @@
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const readline = require("readline");
 const crypto = require("crypto");
-const { fileExists, logEvent, writeDecision, readFile, writeFile, buildSystemPrompt, clipForDisplay, question, claudeRaw, claudeCall, claudeTurn, runLockableInterview } = require("./runner-utils");
+const { fileExists, logEvent, writeDecision, readFile, writeFile, buildSystemPrompt, clipForDisplay, claudeRaw, claudeCall, claudeTurn, runLockableInterview } = require("./runner-utils");
+const { createInteraction } = require("./io/interaction");
+const { cliAdapter } = require("./io/adapters/cli");
 const { A, createPhaseDisplay } = require("./display");
+
+// Module-level io and mode — set once in main(), shared by escalate(), checkBudget(), etc.
+let io   = null;
+let mode = "manual";
 
 const RUNS_DIR    = path.join(__dirname, "runs");
 const BRAIN_PATH  = path.join(__dirname, "brain.md");
@@ -512,7 +517,7 @@ async function runBrainInterview() {
     readFile(path.join(AGENTS_DIR, "leadership", "brain-interviewer.md"))
   );
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const io = createInteraction(cliAdapter());
 
   const display = createPhaseDisplay("Leadership", "Brain Interview", "", "thinking...");
   display.log(`\n  ${A.dim("The factory is building your decision-making profile.")}`);
@@ -533,14 +538,13 @@ async function runBrainInterview() {
   }
 
   const lockedOutput = await runLockableInterview({
-    systemPrompt, transcriptPath, display, rl,
+    systemPrompt, transcriptPath, display, io,
     agentName: "Brain Interviewer",
     lockSignalRe: /ready to lock the brain/i,
     lockConfirmPrompt: "Lock the brain?",
     executeLock,
     onUsage: (u) => logTokens("Brain Interviewer", u),
   });
-  rl.close();
 
   if (!lockedOutput?.brain) {
     console.error("Brain interview did not produce a valid locked output.");
@@ -553,6 +557,7 @@ async function runBrainInterview() {
     writeFile(path.join(__dirname, "brain-config.json"), JSON.stringify(lockedOutput.config, null, 2));
   }
   display.finish("brain.md written");
+  io.close();
 
   console.log(`\n  ${A.dim("Brain saved to brain.md — this will be used for all future auto decisions.")}\n`);
 }
@@ -610,7 +615,7 @@ async function runRunBrainInterview(runDir, mode = "manual") {
   const transcriptPath = path.join(runDir, "run-brain-transcript.md");
   writeFile(transcriptPath, "# Run Brain Interview Transcript\n");
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const io = createInteraction(cliAdapter());
 
   const display = createPhaseDisplay("Leadership", "Run Brain", "", "reading specs...");
   display.log(`\n  ${A.dim("Calibrating for this specific project.")}`);
@@ -640,14 +645,13 @@ async function runRunBrainInterview(runDir, mode = "manual") {
   }
 
   const lockedOutput = await runLockableInterview({
-    systemPrompt, transcriptPath, display, rl,
+    systemPrompt, transcriptPath, display, io,
     agentName: "Run Brain",
     lockSignalRe: /ready to lock the run brain/i,
     lockConfirmPrompt: "Lock the run brain?",
     executeLock,
     onUsage: (u) => logTokens("Run Brain", u),
   });
-  rl.close();
 
   if (!lockedOutput?.runBrain) {
     console.error("Run brain interview did not produce a valid locked output.");
@@ -660,6 +664,7 @@ async function runRunBrainInterview(runDir, mode = "manual") {
     writeFile(path.join(runDir, "run-config.json"), JSON.stringify(lockedOutput.config, null, 2));
   }
   display.finish("run-brain.md written");
+  io.close();
 
   console.log(`\n  ${A.dim("Run brain saved — applies to this run only.")}\n`);
 }
@@ -707,6 +712,48 @@ function readBudgetLimit(runDir) {
   return { limit: null, source: "none" };
 }
 
+// Runs build and loops on exit code 43 (verification needs human feedback).
+// Human input collected here so readline is never corrupted by agentStream.
+async function runBuildWithFeedback(runId, runDir, mode) {
+  const buildDir = path.join(runDir, "build");
+  const feedbackNeededPath = path.join(buildDir, "verification-feedback-needed.json");
+  const feedbackPath = path.join(buildDir, "verification-feedback.json");
+
+  while (true) {
+    const exitCode = mode === "auto"
+      ? await runDivisionAuto("run-build.js", ["--run-id", runId], (sig) => handleBuildSignal(runDir, sig))
+      : runDivision("run-build.js", ["--run-id", runId]);
+
+    // Clear any frozen phase-display header left on screen by the child process.
+    process.stdout.write(A.resetScroll + A.moveTo(1, 1) + A.clearToEnd);
+
+    if (exitCode !== 43) return exitCode;
+
+    const neededData = JSON.parse(readFile(feedbackNeededPath));
+    fs.unlinkSync(feedbackNeededPath);
+
+    console.log(`\n${"─".repeat(60)}`);
+    console.log("  Verification failed — describe what needs to be fixed.");
+    console.log(`${"─".repeat(60)}\n`);
+
+    if (neededData.failures) {
+      for (const f of neededData.failures) {
+        console.log(`  [FAIL] Criterion ${f.criterionId}: ${f.description}`);
+        if (f.expected) console.log(`         Expected: ${f.expected}`);
+        if (f.observed) console.log(`         Observed: ${f.observed}\n`);
+      }
+    }
+
+    const feedback = await io.turn("Your feedback: ");
+    if (!feedback.trim()) {
+      console.log("No feedback provided. Aborting.");
+      process.exit(1);
+    }
+
+    writeFile(feedbackPath, JSON.stringify({ feedback }));
+  }
+}
+
 async function checkBudget(runDir, checkpoint) {
   const { limit, source } = readBudgetLimit(runDir);
   if (!limit) return; // no limit set
@@ -724,9 +771,12 @@ async function checkBudget(runDir, checkpoint) {
   console.log(`  Usage:  ${A.yellow(pct + "%")}`);
   console.log(`${"─".repeat(60)}\n`);
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await question(rl, "Continue anyway? (yes / abort): ");
-  rl.close();
+  if (mode === "auto") {
+    console.log(`  ${A.dim("Auto mode — continuing past budget limit.")}\n`);
+    return;
+  }
+
+  const answer = await io.turn("Continue anyway? (yes / abort): ");
 
   if (!/^(yes|y)/i.test(answer.trim())) {
     console.log(`\n  ${A.red("✗")}  Aborted by budget limit.\n`);
@@ -788,9 +838,7 @@ async function escalate(runDir, reason, context = {}) {
   console.log(`\n  ${A.dim("Options:")}  ${options.join("  /  ")}`);
   console.log(`${"═".repeat(60)}\n`);
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const raw = await question(rl, "  Your choice: ");
-  rl.close();
+  const raw = await io.turn("  Your choice: ");
 
   const answer = raw.trim().toLowerCase();
   logEvent(runDir, { phase: "factory", event: "escalation", reason, answer, context: context.at ?? "" });
@@ -854,8 +902,10 @@ function abort(runDir, division, reason, loop) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const { mode, stopAfter, runId, caveman, tag } = parseArgs();
+  const { mode: parsedMode, stopAfter, runId, caveman, tag } = parseArgs();
+  mode = parsedMode;
   const runDir = path.join(RUNS_DIR, runId);
+  io = createInteraction(cliAdapter());
 
   if (caveman) process.env.FACTORY_CAVEMAN = "1";
 
@@ -888,6 +938,7 @@ async function main() {
   if (stopAfter === "design") {
     logEvent(runDir, { phase: "factory", event: "stopped-after", division: "design" });
     console.log("Stopped after Design as requested.\n");
+    io.close();
     return;
   }
 
@@ -910,9 +961,7 @@ async function main() {
       const artifactReady = fileExists(path.join(runDir, "artifact", "MANIFEST.txt"));
       if (!artifactReady || hasPendingReviewFailures(runDir)) {
         banner(runDir, "Build", loopNote);
-        const buildExit = mode === "auto"
-          ? await runDivisionAuto("run-build.js", ["--run-id", runId], (sig) => handleBuildSignal(runDir, sig))
-          : runDivision("run-build.js", ["--run-id", runId]);
+        const buildExit = await runBuildWithFeedback(runId, runDir, mode);
         if (buildExit !== 0) abort(runDir, "Build", "Exiting.", loop);
         logEvent(runDir, { phase: "factory", event: "division-complete", division: "build", loop });
         await checkBudget(runDir, `after Build (loop ${loop})`);
@@ -923,6 +972,7 @@ async function main() {
       if (stopAfter === "build") {
         logEvent(runDir, { phase: "factory", event: "stopped-after", division: "build" });
         console.log("Stopped after Build as requested.\n");
+        io.close();
         return;
       }
 
@@ -938,6 +988,7 @@ async function main() {
       if (stopAfter === "review") {
         logEvent(runDir, { phase: "factory", event: "stopped-after", division: "review" });
         console.log("Stopped after Review as requested.\n");
+        io.close();
         return;
       }
 
@@ -980,9 +1031,7 @@ async function main() {
       // Rebuild only if security sent remediations
       if (hasPendingSecurityRemediations(runDir)) {
         banner(runDir, "Build", loopNote);
-        const rebuildExit = mode === "auto"
-          ? await runDivisionAuto("run-build.js", ["--run-id", runId], (sig) => handleBuildSignal(runDir, sig))
-          : runDivision("run-build.js", ["--run-id", runId]);
+        const rebuildExit = await runBuildWithFeedback(runId, runDir, mode);
         if (rebuildExit !== 0) abort(runDir, "Build", "Failed during security remediation. Exiting.", loop);
         logEvent(runDir, { phase: "factory", event: "division-complete", division: "build", loop, context: "security-remediation" });
         await checkBudget(runDir, `after Build / security remediation (loop ${loop})`);
@@ -1035,6 +1084,7 @@ async function main() {
   console.log(A.dim(budgetLine));
   console.log(`  Inspect:  node inspect.js ${runId}`);
   console.log(`${"─".repeat(60)}\n`);
+  io.close();
 }
 
 main().catch((err) => {

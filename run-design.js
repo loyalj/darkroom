@@ -19,8 +19,9 @@
 
 const fs = require("fs");
 const path = require("path");
-const readline = require("readline");
 const crypto = require("crypto");
+const { createInteraction } = require("./io/interaction");
+const { cliAdapter } = require("./io/adapters/cli");
 const { createPhaseDisplay, createTicker } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
 const { readFile, writeFile, buildSystemPrompt, logEvent, claudeCall, claudeTurn } = require("./runner-utils");
@@ -56,17 +57,11 @@ function runId() {
 // Interactive interview phase
 // ---------------------------------------------------------------------------
 
-async function runInterviewPhase(display, agentPromptPath, systemContext, transcriptPath, completionSignal, onUsage) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
+async function runInterviewPhase(io, display, agentPromptPath, systemContext, transcriptPath, completionSignal, onUsage) {
   const agentPrompt = readFile(agentPromptPath);
   const systemPrompt = buildSystemPrompt(readFile(SHARED_CONVENTIONS), readFile(SHARED_OUTPUT_FORMATS), agentPrompt, systemContext || "");
 
   const conversationHistory = [];
-
-  function question(prompt) {
-    return new Promise((resolve) => rl.question(prompt, resolve));
-  }
 
   // Kick off with an opening message from the agent
   display.update("thinking...");
@@ -77,7 +72,7 @@ async function runInterviewPhase(display, agentPromptPath, systemContext, transc
   conversationHistory.push({ role: "assistant", content: agentTurn });
 
   while (true) {
-    const userInput = await question("You: ");
+    const userInput = await io.turn("You: ");
     if (!userInput.trim()) continue;
 
     appendTranscript(transcriptPath, "User", userInput);
@@ -95,7 +90,6 @@ async function runInterviewPhase(display, agentPromptPath, systemContext, transc
     }
   }
 
-  rl.close();
   return conversationHistory;
 }
 
@@ -103,26 +97,18 @@ async function runInterviewPhase(display, agentPromptPath, systemContext, transc
 // Clarification round
 // ---------------------------------------------------------------------------
 
-async function runClarificationRound(issues, transcriptPath, display) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-  function question(prompt) {
-    return new Promise((resolve) => rl.question(prompt, resolve));
-  }
-
+async function runClarificationRound(io, issues, transcriptPath, display) {
   display.log("A few things need clarification before the spec can be written.\n");
 
   for (const issue of issues) {
     display.log(`[${issue.id.toUpperCase()}] ${issue.summary}`);
     display.log(`\nQuestion: ${issue.question}\n`);
 
-    const answer = await question("Your answer: ");
+    const answer = await io.turn("Your answer: ");
     appendTranscript(transcriptPath, `Clarification [${issue.id}]`, issue.question);
     appendTranscript(transcriptPath, "User", answer);
     display.log("");
   }
-
-  rl.close();
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +120,7 @@ async function main() {
   const resumeIndex = args.indexOf("--run-id");
   const id = resumeIndex >= 0 ? args[resumeIndex + 1] : runId();
   const runDir = path.join(RUNS_DIR, id);
+  const io = createInteraction(cliAdapter());
 
   fs.mkdirSync(path.join(runDir, "handoff"), { recursive: true });
 
@@ -149,6 +136,7 @@ async function main() {
     writeFile(functionalTranscriptPath, `# Functional Interview Transcript\n`);
     const display = createPhaseDisplay("Design", "Functional Interview", "1 of 5", "starting up", { onFinish: (ms) => logTime(runDir, "Design", "Functional Interview", ms) });
     await runInterviewPhase(
+      io,
       display,
       path.join(AGENTS_DIR, "design", "interviewer.md"),
       "",
@@ -170,6 +158,7 @@ async function main() {
     const functionalContext = `## Functional Interview Context\n\n${readFile(functionalTranscriptPath)}`;
     const display = createPhaseDisplay("Design", "Experience Interview", "2 of 5", "starting up", { onFinish: (ms) => logTime(runDir, "Design", "Experience Interview", ms) });
     await runInterviewPhase(
+      io,
       display,
       path.join(AGENTS_DIR, "design", "experience-interviewer.md"),
       functionalContext,
@@ -224,7 +213,7 @@ async function main() {
         `${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} to resolve`,
         { onFinish: (ms) => logTime(runDir, "Design", "Clarification", ms) }
       );
-      await runClarificationRound(issuesFound, clarificationTranscriptPath, display);
+      await runClarificationRound(io, issuesFound, clarificationTranscriptPath, display);
       display.finish("all clarifications complete");
       logEvent(runDir, { phase: "design", event: "clarification-round-complete" });
     }
@@ -287,6 +276,7 @@ async function main() {
   console.log("Proceed to build: node run-build.js --run-id " + id + "\n");
 
   logEvent(runDir, { phase: "design", event: "design-division-complete" });
+  io.close();
 }
 
 main().catch((err) => {

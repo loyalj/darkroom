@@ -160,7 +160,7 @@ function claudeTurn(systemPrompt, history, onUsage) {
 
 // Shared interactive interview loop — handles opening turn, user input, user/agent-initiated lock.
 // Returns the result of executeLock().
-async function runLockableInterview({ systemPrompt, transcriptPath, display, rl, agentName, lockSignalRe, lockConfirmPrompt, executeLock, onUsage }) {
+async function runLockableInterview({ systemPrompt, transcriptPath, display, io, agentName, lockSignalRe, lockConfirmPrompt, executeLock, onUsage }) {
   const history = [];
 
   display.update("thinking...");
@@ -171,7 +171,7 @@ async function runLockableInterview({ systemPrompt, transcriptPath, display, rl,
   history.push({ role: "assistant", content: agentTurn });
 
   while (true) {
-    const userInput = await question(rl, "You: ");
+    const userInput = await io.turn("You: ");
     if (!userInput.trim()) continue;
 
     if (/^(lock|done|finalize)$/i.test(userInput.trim())) {
@@ -189,7 +189,7 @@ async function runLockableInterview({ systemPrompt, transcriptPath, display, rl,
     history.push({ role: "assistant", content: agentTurn });
 
     if (lockSignalRe.test(agentTurn)) {
-      const confirm = await question(rl, `${lockConfirmPrompt} (yes / keep discussing): `);
+      const confirm = await io.turn(`${lockConfirmPrompt} (yes / keep discussing): `);
       fs.appendFileSync(transcriptPath, `\n## User\n\n${confirm.trim()}\n`);
       history.push({ role: "user", content: confirm });
 

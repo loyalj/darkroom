@@ -17,10 +17,11 @@
 
 const fs = require("fs");
 const path = require("path");
-const readline = require("readline");
+const { createInteraction } = require("./io/interaction");
+const { cliAdapter } = require("./io/adapters/cli");
 const { createPhaseDisplay, agentStream } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, question, hr, claudeCall, collectSourceFiles, extractCompact } = require("./runner-utils");
+const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, claudeCall, collectSourceFiles, extractCompact } = require("./runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -177,7 +178,7 @@ async function runVerdictAgent(securityDir, staticReport, dynamicReport, caveman
 // Phase 4: Human checkpoint
 // ---------------------------------------------------------------------------
 
-async function humanCheckpoint(verdictReport, securityDir, runDir) {
+async function humanCheckpoint(io, verdictReport, securityDir, runDir) {
   // Parse verdict from report
   const verdictMatch = verdictReport.match(/^#\s*Security Verdict:\s*(PASS|CONDITIONAL PASS|BLOCK)/im);
   const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : "BLOCK";
@@ -188,14 +189,11 @@ async function humanCheckpoint(verdictReport, securityDir, runDir) {
   console.log(verdictReport);
   console.log(`\n${hr2()}\n`);
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
   if (verdict === "BLOCK") {
     console.log("⚠  Security verdict is BLOCK. Critical findings must be resolved before shipping.\n");
     console.log("The build division will receive remediation requests.\n");
     if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"security-block"}\n');
-    await question(rl, "Press Enter to write remediation requests and exit: ");
-    rl.close();
+    await io.turn("Press Enter to write remediation requests and exit: ");
     writeRemediationRequests(verdictReport, securityDir, runDir);
     return false;
   }
@@ -213,7 +211,7 @@ async function humanCheckpoint(verdictReport, securityDir, runDir) {
       if (process.env.FACTORY_AUTO === "1") {
         process.stdout.write(`FACTORY_SIGNAL:${JSON.stringify({ point: "security-finding", finding: finding.slice(0, 300) })}\n`);
       }
-      const decision = await question(rl, "Accept this finding or send for fix? (accept / fix): ");
+      const decision = await io.turn("Accept this finding or send for fix? (accept / fix): ");
       if (decision.trim().toLowerCase() === "accept") {
         accepted.push(finding);
         logEvent(runDir, { phase: "security", event: "high-finding-accepted", finding: finding.slice(0, 100) });
@@ -226,7 +224,6 @@ async function humanCheckpoint(verdictReport, securityDir, runDir) {
     if (toFix.length > 0) {
       console.log(`\n${toFix.length} finding(s) sent back for remediation.\n`);
       writeRemediationRequests(verdictReport, securityDir, runDir, toFix);
-      rl.close();
       return false;
     }
 
@@ -237,7 +234,7 @@ async function humanCheckpoint(verdictReport, securityDir, runDir) {
   let approved = false;
   while (!approved) {
     if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"security-final-approval"}\n');
-    const input = await question(rl, "Approve security review and proceed? (yes / no): ");
+    const input = await io.turn("Approve security review and proceed? (yes / no): ");
     const trimmed = input.trim().toLowerCase();
 
     if (trimmed === "yes" || trimmed === "y") {
@@ -245,15 +242,13 @@ async function humanCheckpoint(verdictReport, securityDir, runDir) {
       logEvent(runDir, { phase: "security", event: "security-approved" });
       console.log("\nSecurity review approved.\n");
     } else if (trimmed === "no" || trimmed === "n") {
-      const reason = await question(rl, "Reason (will be logged): ");
+      const reason = await io.turn("Reason (will be logged): ");
       logEvent(runDir, { phase: "security", event: "security-rejected", reason });
       writeRemediationRequests(verdictReport, securityDir, runDir);
-      rl.close();
       return false;
     }
   }
 
-  rl.close();
   return true;
 }
 
@@ -343,7 +338,9 @@ async function main() {
   const verdictReport = await runVerdictAgent(securityDir, staticReport, dynamicReport, caveman);
 
   // Phase 4: Human checkpoint
-  const approved = await humanCheckpoint(verdictReport, securityDir, runDir);
+  const io = createInteraction(cliAdapter());
+  const approved = await humanCheckpoint(io, verdictReport, securityDir, runDir);
+  io.close();
 
   writeTokenTable(runDir);
   writeTimeTable(runDir);

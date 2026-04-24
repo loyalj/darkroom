@@ -226,6 +226,22 @@ body {
 #token-table tr td:last-child { text-align: right; color: var(--text); }
 #token-table .token-total-row td { color: var(--text); font-weight: 600; border-top: 1px solid var(--border); padding-top: 4px; }
 
+#budget-bar { margin: 10px 16px 4px; }
+#budget-bar:empty { display: none; }
+.budget-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+.budget-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.budget-nums { font-size: 11px; color: var(--text); }
+.budget-source { color: var(--muted); }
+.budget-track { height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
+.budget-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+.budget-fill.budget-green { background: var(--green); }
+.budget-fill.budget-yellow { background: var(--yellow); }
+.budget-fill.budget-red { background: var(--red); }
+.budget-pct { font-size: 11px; text-align: right; margin-top: 3px; font-weight: 600; }
+.budget-pct.budget-green { color: var(--green); }
+.budget-pct.budget-yellow { color: var(--yellow); }
+.budget-pct.budget-red { color: var(--red); }
+
 #decision-feed { flex: 1; overflow-y: auto; padding: 8px 16px; display: flex; flex-direction: column; gap: 8px; }
 
 .decision-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 11px; }

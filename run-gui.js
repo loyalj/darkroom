@@ -54,6 +54,25 @@ function runMeta(dir) {
   try { return JSON.parse(fs.readFileSync(path.join(dir, "run-meta.json"), "utf8")); } catch { return null; }
 }
 
+function readBudgetLimit(dir) {
+  try {
+    const runCfg = path.join(dir, "run-config.json");
+    if (fs.existsSync(runCfg)) {
+      const cfg = JSON.parse(fs.readFileSync(runCfg, "utf8"));
+      if (cfg.tokenLimit != null && cfg.tokenLimit !== 0) return { limit: cfg.tokenLimit, source: "run brain" };
+      if (cfg.tokenLimit === 0) return { limit: null, source: null };
+    }
+  } catch {}
+  try {
+    const brainCfg = path.join(__dirname, "brain-config.json");
+    if (fs.existsSync(brainCfg)) {
+      const cfg = JSON.parse(fs.readFileSync(brainCfg, "utf8"));
+      if (cfg.tokenLimitPerRun != null) return { limit: cfg.tokenLimitPerRun, source: "global brain" };
+    }
+  } catch {}
+  return { limit: null, source: null };
+}
+
 function runSummary(id) {
   const dir = path.join(RUNS_DIR, id);
   const logEvents = parseJsonLines(path.join(dir, "log.jsonl"));
@@ -99,7 +118,8 @@ function runDetail(id) {
   const times = parseJsonLines(path.join(dir, "time-usage.jsonl"));
   const decisions = parseJsonLines(path.join(dir, "decision-log.jsonl"));
   const meta = runMeta(dir);
-  return { id, meta, logEvents, tokens, times, decisions };
+  const { limit: tokenLimit, source: tokenLimitSource } = readBudgetLimit(dir);
+  return { id, meta, logEvents, tokens, times, decisions, tokenLimit, tokenLimitSource };
 }
 
 // Build the viewable file manifest for a run directory.
@@ -368,9 +388,10 @@ app.get("/api/runs/:id/stream", (req, res) => {
   const decisions = parseJsonLines(path.join(dir, "decision-log.jsonl"));
   const state = deriveState(logEvents);
   const files = getRunFiles(dir);
+  const { limit: tokenLimit, source: tokenLimitSource } = readBudgetLimit(dir);
 
   // Initial snapshot — includes file manifest and active transcript name
-  sseSend(res, "snapshot", { id, logEvents, tokens, decisions, state, files });
+  sseSend(res, "snapshot", { id, logEvents, tokens, decisions, state, files, tokenLimit, tokenLimitSource });
 
   // Send the name of the most recently modified transcript so client auto-loads it
   function sendActiveTranscript() {

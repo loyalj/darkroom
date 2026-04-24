@@ -15,6 +15,8 @@ const state = {
   runMeta: null,
   runs: [],
   sse: null,
+  tokenLimit: null,
+  tokenLimitSource: null,
   // Document viewer
   fileCategories: [],    // [{ label, files: [{ key, label, relPath, type, ext? }] }]
   activeCategory: null,  // currently selected category label
@@ -71,6 +73,10 @@ function tokenTotal(entries) {
   return entries.reduce((s, t) => s + (t.input || 0) + (t.output || 0), 0);
 }
 
+function tokenOutputTotal(entries) {
+  return entries.reduce((s, t) => s + (t.output || 0), 0);
+}
+
 function tokensByPhase(entries) {
   const phases = {};
   for (const t of entries) {
@@ -120,6 +126,31 @@ function renderTokenTable(tokens) {
     <tr class="token-total-row">
       <td>Total</td><td>${fmtTokens(total)}</td>
     </tr>`;
+  renderBudgetBar(tokens);
+}
+
+function renderBudgetBar(tokens) {
+  const bar = $("#budget-bar");
+  const limit = state.tokenLimit;
+  if (!limit) { bar.innerHTML = ""; return; }
+
+  const spent = tokenOutputTotal(tokens);
+  const pct = Math.min((spent / limit) * 100, 100);
+  const pctRound = Math.round(pct);
+  const colorClass = pct >= 90 ? "budget-red" : pct >= 75 ? "budget-yellow" : "budget-green";
+
+  bar.innerHTML = `
+    <div class="budget-header">
+      <span class="budget-label">Token Budget</span>
+      <span class="budget-nums">${fmtTokens(spent)} / ${fmtTokens(limit)} output
+        <span class="budget-source">(${escHtml(state.tokenLimitSource ?? "")})</span>
+      </span>
+    </div>
+    <div class="budget-track">
+      <div class="budget-fill ${colorClass}" style="width:${pct}%"></div>
+    </div>
+    <div class="budget-pct ${colorClass}">${pctRound}%</div>
+  `;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +368,8 @@ function connectRun(runId) {
   state.activeCategory = null;
   state.activeTabKey = null;
   state.pinnedTabKey = null;
+  state.tokenLimit = null;
+  state.tokenLimitSource = null;
 
   // Fetch meta for tag display
   fetch(`/api/runs/${runId}`)
@@ -357,6 +390,8 @@ function connectRun(runId) {
       state.decisions = msg.decisions ?? [];
       state.pipelineState = msg.state;
       state.fileCategories = msg.files ?? [];
+      state.tokenLimit = msg.tokenLimit ?? null;
+      state.tokenLimitSource = msg.tokenLimitSource ?? null;
       renderAll();
 
     } else if (msg.type === "log") {
@@ -425,6 +460,8 @@ function showIdleState() {
   state.activeCategory = null;
   state.activeTabKey = null;
   state.pinnedTabKey = null;
+  state.tokenLimit = null;
+  state.tokenLimitSource = null;
 
   $("#monitor-header").innerHTML = `
     <div class="status-dot idle"></div>

@@ -305,4 +305,30 @@ function createTicker(label) {
   };
 }
 
-module.exports = { createPhaseDisplay, agentStream, createTicker, A, formatElapsed };
+// ---------------------------------------------------------------------------
+// Plain display — same interface as createPhaseDisplay but NO scroll regions.
+// Use this before any io.turn() call so readline state is never corrupted.
+// ---------------------------------------------------------------------------
+
+function createPlainDisplay(department, phaseName, phaseStep = "", subtitle = "", opts = {}) {
+  const start = Date.now();
+  const label = `${department} — ${phaseName}${phaseStep ? `  ${A.dim(phaseStep)}` : ""}`;
+  process.stdout.write(`\n  ${A.bold(label)}${subtitle ? `  ${A.dim(subtitle)}` : ""}\n`);
+
+  return {
+    update(s) {
+      if (s) process.stdout.write(`  ${A.dim("↪")} ${A.dim(s)}\n`);
+    },
+    log(line) {
+      process.stdout.write(line + "\n");
+    },
+    finish(summary) {
+      const elapsed = formatElapsed(Date.now() - start);
+      if (opts.onFinish) opts.onFinish(Date.now() - start);
+      process.stdout.write(`  ${A.green("✓")} ${summary || "done"}  —  ${A.cyan(elapsed)}\n\n`);
+    },
+    stop() {},
+  };
+}
+
+module.exports = { createPhaseDisplay, createPlainDisplay, agentStream, createTicker, A, formatElapsed };
