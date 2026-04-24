@@ -22,7 +22,8 @@ const fs = require("fs");
 const path = require("path");
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
-const { createPhaseDisplay, agentStream, A, formatElapsed } = require("./display");
+const { fileAdapter } = require("./io/adapters/file");
+const { createPhaseDisplay, agentStream, A, formatElapsed, setRunDir } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
 const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, claudeCall, claudeToolCallAsync, extractCompact } = require("./runner-utils");
 
@@ -456,7 +457,7 @@ async function humanApproval(io, verdictReport, reviewDir, runDir) {
     let resolved = false;
     while (!resolved) {
       if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"review-verdict-no-ship"}\n');
-      const input = await io.turn("Choice: ");
+      const input = await io.turn("Choice: ", { options: ["accept", "override"], context: "Verdict is NO-SHIP. Accept to route back to build, or override to ship anyway (you will be asked for a reason)." });
       const trimmed = input.trim().toLowerCase();
 
       if (trimmed === "" || trimmed === "accept") {
@@ -481,7 +482,7 @@ async function humanApproval(io, verdictReport, reviewDir, runDir) {
   let approved = false;
   while (!approved) {
     if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"review-verdict-ship"}\n');
-    const input = await io.turn("Approve and ship? (yes / no): ");
+    const input = await io.turn("Approve and ship? (yes / no): ", { options: ["yes", "no"] });
     const trimmed = input.trim().toLowerCase();
 
     if (trimmed === "yes" || trimmed === "y") {
@@ -578,6 +579,7 @@ async function main() {
   const id = args[runIdIndex + 1];
   const caveman = args.includes("--caveman") || process.env.FACTORY_CAVEMAN === "1";
   const runDir = path.join(RUNS_DIR, id);
+  setRunDir(runDir);
   const handoffDir = path.join(runDir, "handoff");
   const artifactDir = path.join(runDir, "artifact");
   const reviewDir = path.join(runDir, "review");
@@ -614,7 +616,9 @@ async function main() {
   const verdictReport = await runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir, caveman);
 
   // Phase 6: Human approval
-  const io = createInteraction(cliAdapter());
+  const io = process.env.DARK_ROOM_IO === "file"
+    ? createInteraction(fileAdapter(runDir))
+    : createInteraction(cliAdapter());
   const shipped = await humanApproval(io, verdictReport, reviewDir, runDir);
   io.close();
 

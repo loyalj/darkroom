@@ -166,15 +166,15 @@ async function runLockableInterview({ systemPrompt, transcriptPath, display, io,
   display.update("thinking...");
   let agentTurn = claudeTurn(systemPrompt, history, onUsage);
   display.update("your turn");
-  display.log(`\n${agentName}: ${clipForDisplay(agentTurn)}\n`);
+  display.log(`\n${agentName}: ${clipForDisplay(agentTurn)}\n`, { subtype: "interview" });
   fs.appendFileSync(transcriptPath, `\n## ${agentName}\n\n${agentTurn.trim()}\n`);
   history.push({ role: "assistant", content: agentTurn });
 
   while (true) {
-    const userInput = await io.turn("You: ");
+    const userInput = await io.turn("You: ", { context: agentTurn, options: ["lock the plan"], hybrid: true });
     if (!userInput.trim()) continue;
 
-    if (/^(lock|done|finalize)$/i.test(userInput.trim())) {
+    if (/^\s*(lock|done|finalize)\b.*$/i.test(userInput.trim())) {
       return await executeLock();
     }
 
@@ -184,12 +184,12 @@ async function runLockableInterview({ systemPrompt, transcriptPath, display, io,
     display.update("thinking...");
     agentTurn = claudeTurn(systemPrompt, history, onUsage);
     display.update("your turn");
-    display.log(`\n${agentName}: ${clipForDisplay(agentTurn)}\n`);
+    display.log(`\n${agentName}: ${clipForDisplay(agentTurn)}\n`, { subtype: "interview" });
     fs.appendFileSync(transcriptPath, `\n## ${agentName}\n\n${agentTurn.trim()}\n`);
     history.push({ role: "assistant", content: agentTurn });
 
     if (lockSignalRe.test(agentTurn)) {
-      const confirm = await io.turn(`${lockConfirmPrompt} (yes / keep discussing): `);
+      const confirm = await io.turn(`${lockConfirmPrompt} (yes / keep discussing): `, { context: `${agentTurn}\n\n${lockConfirmPrompt}?`, options: ["yes", "keep discussing"] });
       fs.appendFileSync(transcriptPath, `\n## User\n\n${confirm.trim()}\n`);
       history.push({ role: "user", content: confirm });
 

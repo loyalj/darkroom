@@ -46,9 +46,11 @@
 
           <!-- Left column: step + tokens + decisions -->
           <div id="monitor-left">
-            <div class="section">
+            <div class="section" id="step-section">
               <div class="section-title">Current Step</div>
               <div id="current-step">Waiting for a run…</div>
+              <div id="step-status"></div>
+              <div id="activity-feed"></div>
             </div>
 
             <div class="section">
@@ -84,6 +86,7 @@
               <div id="chat-resize"></div>
               <div id="chat-inner">
                 <div id="chat-query"></div>
+                <div id="chat-options"></div>
                 <div id="chat-input-row">
                   <textarea id="chat-field" placeholder="Waiting for factory…" disabled></textarea>
                   <button id="chat-submit" disabled>Send</button>

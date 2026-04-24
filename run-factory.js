@@ -27,7 +27,7 @@ const { fileExists, logEvent, writeDecision, readFile, writeFile, buildSystemPro
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
 const { fileAdapter } = require("./io/adapters/file");
-const { A, createPhaseDisplay } = require("./display");
+const { A, createPhaseDisplay, setRunDir } = require("./display");
 
 // Module-level io and mode — set once in main(), shared by escalate(), checkBudget(), etc.
 let io   = null;
@@ -86,7 +86,7 @@ function runDivision(script, extraArgs = []) {
 }
 
 // Auto mode: spawn with piped stdin/stdout, passthrough to terminal, intercept signals.
-function runDivisionAuto(script, extraArgs = [], onSignal) {
+function runDivisionAuto(script, extraArgs = [], onSignal, runDir = null) {
   const { spawn } = require("child_process");
   return new Promise((resolve, reject) => {
     const proc = spawn("node", [script, ...extraArgs], {
@@ -112,7 +112,12 @@ function runDivisionAuto(script, extraArgs = [], onSignal) {
           try { signal = JSON.parse(match[1]); } catch { signal = { raw: match[1] }; }
           Promise.resolve(onSignal(signal))
             .then((response) => {
-              proc.stdin.write(response + "\n");
+              if (process.env.DARK_ROOM_IO === "file" && runDir) {
+                // File adapter reads input-response.json, not stdin
+                fs.writeFileSync(path.join(runDir, "input-response.json"), JSON.stringify({ response }));
+              } else {
+                proc.stdin.write(response + "\n");
+              }
               signalInFlight = false;
             })
             .catch(reject);
@@ -728,7 +733,7 @@ async function runBuildWithFeedback(runId, runDir, mode) {
 
   while (true) {
     const exitCode = mode === "auto"
-      ? await runDivisionAuto("run-build.js", ["--run-id", runId], (sig) => handleBuildSignal(runDir, sig))
+      ? await runDivisionAuto("run-build.js", ["--run-id", runId], (sig) => handleBuildSignal(runDir, sig), runDir)
       : runDivision("run-build.js", ["--run-id", runId]);
 
     // Clear any frozen phase-display header left on screen by the child process.
@@ -778,12 +783,12 @@ async function checkBudget(runDir, checkpoint) {
   console.log(`  Usage:  ${A.yellow(pct + "%")}`);
   console.log(`${"─".repeat(60)}\n`);
 
-  if (mode === "auto") {
+  if (mode === "auto" && process.env.DARK_ROOM_IO !== "file") {
     console.log(`  ${A.dim("Auto mode — continuing past budget limit.")}\n`);
     return;
   }
 
-  const answer = await io.turn("Continue anyway? (yes / abort): ");
+  const answer = await io.turn("Continue anyway? (yes / abort): ", { options: ["yes", "abort"] });
 
   if (!/^(yes|y)/i.test(answer.trim())) {
     console.log(`\n  ${A.red("✗")}  Aborted by budget limit.\n`);
@@ -845,7 +850,7 @@ async function escalate(runDir, reason, context = {}) {
   console.log(`\n  ${A.dim("Options:")}  ${options.join("  /  ")}`);
   console.log(`${"═".repeat(60)}\n`);
 
-  const raw = await io.turn("  Your choice: ");
+  const raw = await io.turn("  Your choice: ", { options });
 
   const answer = raw.trim().toLowerCase();
   logEvent(runDir, { phase: "factory", event: "escalation", reason, answer, context: context.at ?? "" });
@@ -913,6 +918,7 @@ async function main() {
   mode = parsedMode;
   if (ioFlag === "file") process.env.DARK_ROOM_IO = "file";
   const runDir = path.join(RUNS_DIR, runId);
+  setRunDir(runDir);
   io = createIO(runDir);
 
   if (caveman) process.env.FACTORY_CAVEMAN = "1";
@@ -927,6 +933,7 @@ async function main() {
 
   // ── Brain ────────────────────────────────────────────────────────────────
 
+  if (!fileExists(BRAIN_PATH)) logEvent(runDir, { phase: "leadership", event: "brain-interview-start" });
   await runBrainInterview(runDir);
 
   // ── Design ──────────────────────────────────────────────────────────────
@@ -952,6 +959,7 @@ async function main() {
 
   // ── Run Brain ────────────────────────────────────────────────────────────
 
+  if (!fileExists(path.join(runDir, "run-brain.md"))) logEvent(runDir, { phase: "leadership", event: "run-brain-start" });
   await runRunBrainInterview(runDir, mode);
 
   // ── Build → Review loop ─────────────────────────────────────────────────
@@ -987,7 +995,7 @@ async function main() {
       // Review
       banner(runDir, "Review", loopNote);
       const reviewExit = mode === "auto"
-        ? await runDivisionAuto("run-review.js", ["--run-id", runId], (sig) => handleReviewSignal(runDir, sig))
+        ? await runDivisionAuto("run-review.js", ["--run-id", runId], (sig) => handleReviewSignal(runDir, sig), runDir)
         : runDivision("run-review.js", ["--run-id", runId]);
       if (reviewExit !== 0) abort(runDir, "Review", "Exiting.", loop);
       logEvent(runDir, { phase: "factory", event: "division-complete", division: "review", loop });
@@ -1048,7 +1056,7 @@ async function main() {
       // Security
       banner(runDir, "Security", loopNote);
       const code = mode === "auto"
-        ? await runDivisionAuto("run-security.js", ["--run-id", runId], (sig) => handleSecuritySignal(runDir, sig))
+        ? await runDivisionAuto("run-security.js", ["--run-id", runId], (sig) => handleSecuritySignal(runDir, sig), runDir)
         : runDivision("run-security.js", ["--run-id", runId]);
       logEvent(runDir, { phase: "factory", event: "division-complete", division: "security", loop });
       await checkBudget(runDir, `after Security (loop ${loop})`);

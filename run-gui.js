@@ -84,10 +84,10 @@ function runSummary(id) {
   const startEvent = logEvents.find((e) => e.phase === "factory" && e.event === "start");
   const lastEvent = logEvents[logEvents.length - 1];
   const complete = logEvents.some((e) => e.event === "pipeline-complete");
-  const shipped = logEvents.some((e) => e.event === "ship-approved");
-  const blocked = logEvents.some((e) => e.event === "ship-blocked");
+  const shipped = logEvents.some((e) => e.event === "ship-approved" || e.event === "ship-approved-override");
+  const blocked = logEvents.some((e) => e.event === "ship-rejected-no-ship" || e.event === "ship-rejected");
   const secApproved = logEvents.some((e) => e.event === "security-approved");
-  const secBlocked = logEvents.some((e) => e.event === "security-blocked");
+  const secBlocked = logEvents.some((e) => e.event === "security-rejected");
 
   let verdict = "running";
   if (complete) {
@@ -203,7 +203,10 @@ function deriveState(logEvents) {
   for (const ev of logEvents) {
     const { phase, event: e } = ev;
 
-    if (phase === "design") {
+    if (phase === "leadership") {
+      if (e === "brain-interview-start") currentStep = "Leadership · Brain Interview";
+      else if (e === "run-brain-start") currentStep = "Leadership · Run Brain";
+    } else if (phase === "design") {
       if (phases.design === "pending") phases.design = "active";
       if (e === "start") { phases.design = "active"; currentStep = "Design · Functional Interview"; }
       else if (e === "functional-interview-complete") currentStep = "Design · Experience Interview";
@@ -226,14 +229,14 @@ function deriveState(logEvents) {
       else if (e === "scenario-complete") currentStep = `Review · Scenario ${ev.scenarioId ?? ""}`;
       else if (e === "edge-case-complete") currentStep = "Review · Verdict";
       else if (e === "verdict-complete") currentStep = "Review · Verdict";
-      else if (e === "ship-approved") currentStep = "Review · Shipped";
-      else if (e === "ship-blocked") currentStep = "Review · Blocked";
+      else if (e === "ship-approved" || e === "ship-approved-override") currentStep = "Review · Shipped";
+      else if (e === "ship-rejected-no-ship" || e === "ship-rejected") currentStep = "Review · Blocked";
       else if (e === "review-division-complete") { phases.review = "done"; currentStep = "Review · Complete"; }
     } else if (phase === "security") {
       if (phases.security === "pending") phases.security = "active";
       if (e === "start") { phases.security = "active"; currentStep = "Security · Running"; }
       else if (e === "security-approved") { currentStep = "Security · Approved"; verdict = "shipped"; }
-      else if (e === "security-blocked") { currentStep = "Security · Blocked"; verdict = "blocked"; }
+      else if (e === "security-rejected") { currentStep = "Security · Blocked"; verdict = "blocked"; }
       else if (e === "security-division-complete") { phases.security = "done"; }
     } else if (phase === "factory") {
       if (e === "division-complete" && ev.loop) loops = Math.max(loops, ev.loop);
@@ -310,10 +313,16 @@ function createTailWatcher(filePath, onNewLines) {
 }
 
 // Watches a file path for any change (including first appearance); calls back when changed.
-function createFileWatcher(filePath, onChanged) {
-  let mtime = fs.existsSync(filePath) ? fs.statSync(filePath).mtimeMs : 0;
+function createFileWatcher(filePath, onChanged, onDeleted = null) {
+  let existed = fs.existsSync(filePath);
+  let mtime = existed ? fs.statSync(filePath).mtimeMs : 0;
   const timer = setInterval(() => {
-    if (!fs.existsSync(filePath)) return;
+    const exists = fs.existsSync(filePath);
+    if (!exists) {
+      if (existed && onDeleted) { existed = false; mtime = 0; onDeleted(); }
+      return;
+    }
+    if (!existed) existed = true;
     const m = fs.statSync(filePath).mtimeMs;
     if (m !== mtime) { mtime = m; onChanged(); }
   }, 500);
@@ -416,8 +425,12 @@ app.get("/api/runs/:id/stream", (req, res) => {
     try { pendingInput = JSON.parse(fs.readFileSync(pendingInputPath, "utf8")); } catch {}
   }
 
+  // Recent activity lines for the live feed (last 80 events)
+  const activityPath = path.join(dir, "activity.jsonl");
+  const recentActivity = parseJsonLines(activityPath).slice(-80);
+
   // Initial snapshot — includes file manifest and active transcript name
-  sseSend(res, "snapshot", { id, logEvents, tokens, decisions, state, files, tokenLimit, tokenLimitSource, pendingInput });
+  sseSend(res, "snapshot", { id, logEvents, tokens, decisions, state, files, tokenLimit, tokenLimitSource, pendingInput, recentActivity });
 
   // Send the name of the most recently modified transcript so client auto-loads it
   function sendActiveTranscript() {
@@ -481,14 +494,24 @@ app.get("/api/runs/:id/stream", (req, res) => {
   // Also watch the artifact directory for new files
   const stopArtifactWatch = createFileWatcher(path.join(dir, "artifact"), sendFiles);
 
-  // Watch for pending factory input points
-  const stopPendingInput = createFileWatcher(pendingInputPath, () => {
-    if (!fs.existsSync(pendingInputPath)) return;
-    try {
-      const data = JSON.parse(fs.readFileSync(pendingInputPath, "utf8"));
-      sseSend(res, "pending-input", { prompt: data.prompt });
-    } catch {}
+  // Watch activity.jsonl — push new lines as they arrive
+  const stopActivity = createTailWatcher(activityPath, (lines) => {
+    const newActivity = lines.flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+    sseSend(res, "activity", { newActivity });
   });
+
+  // Watch for pending factory input points
+  const stopPendingInput = createFileWatcher(
+    pendingInputPath,
+    () => {
+      if (!fs.existsSync(pendingInputPath)) return;
+      try {
+        const data = JSON.parse(fs.readFileSync(pendingInputPath, "utf8"));
+        sseSend(res, "pending-input", { prompt: data.prompt, inputType: data.type ?? "text", options: data.options ?? null });
+      } catch {}
+    },
+    () => sseSend(res, "input-cleared", {})
+  );
 
   const heartbeat = setInterval(() => res.write(": ping\n\n"), 15000);
 
@@ -497,6 +520,7 @@ app.get("/api/runs/:id/stream", (req, res) => {
     stopTranscripts.forEach((s) => s());
     stopFileWatchers.forEach((s) => s());
     stopArtifactWatch();
+    stopActivity();
     stopPendingInput();
     clearInterval(heartbeat);
   });

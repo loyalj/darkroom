@@ -22,6 +22,8 @@ const state = {
   activeCategory: null,  // currently selected category label
   activeTabKey: null,    // currently displayed tab key
   pinnedTabKey: null,    // null = auto-follow transcripts
+  // Activity feed
+  activity: [],
   // Factory input chat pane
   pendingInput: null,
 };
@@ -353,6 +355,83 @@ function transcriptKey(name) {
 }
 
 // ---------------------------------------------------------------------------
+// Activity feed
+// ---------------------------------------------------------------------------
+
+function classifyActivityLine(text) {
+  if (/^\s*[→>]\s*(Bash|Read|Write|Edit|Glob|Grep|Task|WebFetch|WebSearch)/.test(text)) return "act-tool";
+  if (/^\s*[✓✔]/.test(text)) return "act-ok";
+  if (/^\s*[✗✘×]/.test(text)) return "act-err";
+  return "";
+}
+
+function renderActivity() {
+  const feed = $("#activity-feed");
+  const statusEl = $("#step-status");
+  if (!feed) return;
+
+  // Most recent step/ticker event → update the current-step header
+  const lastStep = [...state.activity].reverse().find(
+    (a) => a.type === "step" || a.type === "ticker" || a.type === "finish" || a.type === "ticker-done"
+  );
+
+  if (lastStep) {
+    let header;
+    if (lastStep.type === "step") {
+      header = `${lastStep.dept} · ${lastStep.phase}${lastStep.step ? `  ${lastStep.step}` : ""}`;
+    } else if (lastStep.type === "finish") {
+      header = `${lastStep.dept} · ${lastStep.phase}`;
+    } else {
+      header = lastStep.label ?? "";
+    }
+    $("#current-step").textContent = header;
+  }
+
+  // Most recent status/step event → update sub-status line
+  const lastStatus = [...state.activity].reverse().find(
+    (a) => a.type === "status" || a.type === "step"
+  );
+  if (lastStatus?.status) {
+    statusEl.textContent = `↪ ${lastStatus.status}`;
+  } else {
+    statusEl.textContent = "";
+  }
+
+  // Render line events in the scrolling feed
+  const lineEvents = state.activity.filter(
+    (a) => (a.type === "line" || a.type === "finish" || a.type === "ticker-done" || a.type === "ticker-fail" || a.type === "ticker") &&
+           a.subtype !== "interview" &&
+           (a.text || a.summary || a.label || a.reason)
+  );
+
+  feed.innerHTML = "";
+  for (const ev of lineEvents.slice(-60)) {
+    const div = document.createElement("div");
+    let text = "";
+    if (ev.type === "line") {
+      text = ev.text;
+      div.className = "act-line " + classifyActivityLine(text);
+    } else if (ev.type === "finish") {
+      text = `✓ ${ev.phase} — ${ev.summary}`;
+      div.className = "act-line act-finish";
+    } else if (ev.type === "ticker-done") {
+      text = `✓ ${ev.summary || ev.label}`;
+      div.className = "act-line act-finish";
+    } else if (ev.type === "ticker-fail") {
+      text = `✗ ${ev.reason}`;
+      div.className = "act-line act-err";
+    } else if (ev.type === "ticker") {
+      text = ev.label;
+      div.className = "act-line act-ticker";
+    }
+    div.textContent = text;
+    feed.appendChild(div);
+  }
+
+  feed.scrollTop = feed.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
 // SSE connection
 // ---------------------------------------------------------------------------
 
@@ -372,6 +451,7 @@ function connectRun(runId) {
   state.pinnedTabKey = null;
   state.tokenLimit = null;
   state.tokenLimitSource = null;
+  state.activity = [];
   hideInputPane();
 
   // Fetch meta for tag display
@@ -395,7 +475,8 @@ function connectRun(runId) {
       state.fileCategories = msg.files ?? [];
       state.tokenLimit = msg.tokenLimit ?? null;
       state.tokenLimitSource = msg.tokenLimitSource ?? null;
-      if (msg.pendingInput) showInputPane(msg.pendingInput.prompt);
+      if (msg.pendingInput) showInputPane(msg.pendingInput.prompt, msg.pendingInput.options ?? null, msg.pendingInput.type ?? "text");
+      state.activity = msg.recentActivity ?? [];
       renderAll();
 
     } else if (msg.type === "log") {
@@ -404,6 +485,7 @@ function connectRun(runId) {
       renderMonitorHeader(state.activeRunId, state.pipelineState);
       renderPipelineBar(state.pipelineState);
       $("#current-step").textContent = state.pipelineState?.currentStep ?? "Waiting…";
+      renderActivity();
 
     } else if (msg.type === "tokens") {
       state.tokens.push(...(msg.newTokens ?? []));
@@ -417,8 +499,16 @@ function connectRun(runId) {
       state.fileCategories = msg.files ?? [];
       renderTabStrip(state.fileCategories);
 
+    } else if (msg.type === "activity") {
+      state.activity.push(...(msg.newActivity ?? []));
+      if (state.activity.length > 200) state.activity = state.activity.slice(-200);
+      renderActivity();
+
     } else if (msg.type === "pending-input") {
-      showInputPane(msg.prompt);
+      showInputPane(msg.prompt, msg.options ?? null, msg.inputType ?? "text");
+
+    } else if (msg.type === "input-cleared") {
+      hideInputPane();
 
     } else if (msg.type === "transcript") {
       const key = transcriptKey(msg.name);
@@ -449,6 +539,7 @@ function renderAll() {
   renderDecisions(state.decisions);
   renderTabStrip(state.fileCategories);
   updateAutoBtn();
+  renderActivity();
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +577,9 @@ function showIdleState() {
   $("#file-row").innerHTML = "";
   $("#doc-body").className = "";
   $("#doc-body").innerHTML = `<div class="empty-state"><span>No run in progress</span><span class="hint">Start the factory to begin monitoring</span></div>`;
+  state.activity = [];
+  $("#step-status").textContent = "";
+  $("#activity-feed").innerHTML = "";
   hideInputPane();
 }
 
@@ -556,18 +650,46 @@ async function loadRunList() {
 // Factory input chat pane
 // ---------------------------------------------------------------------------
 
-function showInputPane(prompt) {
+function showInputPane(prompt, options = null, type = "text") {
   state.pendingInput = prompt;
   const pane = $("#chat-pane");
   pane.classList.remove("idle");
   pane.classList.add("active");
   $("#chat-query").textContent = prompt;
-  const field = $("#chat-field");
-  field.value = "";
-  field.disabled = false;
-  field.placeholder = "Type your response… (Ctrl+Enter to send)";
-  $("#chat-submit").disabled = false;
-  setTimeout(() => field.focus(), 50);
+
+  const optionsEl = $("#chat-options");
+  const inputRow = $("#chat-input-row");
+
+  const hasSimpleOptions = options && options.length > 0 && options.every((o) => !/<[^>]+>/.test(o));
+  const showTextarea = !hasSimpleOptions || type === "hybrid";
+
+  if (hasSimpleOptions) {
+    optionsEl.innerHTML = "";
+    options.forEach((opt, i) => {
+      const btn = document.createElement("button");
+      btn.className = "chat-opt-btn";
+      btn.textContent = opt;
+      if (i === 0) btn.classList.add("opt-primary");
+      if (/\babort\b|\bcancel\b/i.test(opt)) btn.classList.add("opt-danger");
+      btn.addEventListener("click", () => submitOption(opt));
+      optionsEl.appendChild(btn);
+    });
+    optionsEl.style.display = "flex";
+  } else {
+    optionsEl.style.display = "none";
+  }
+
+  if (showTextarea) {
+    inputRow.style.display = "flex";
+    const field = $("#chat-field");
+    field.value = "";
+    field.disabled = false;
+    field.placeholder = "Type your response… (Ctrl+Enter to send)";
+    $("#chat-submit").disabled = false;
+    setTimeout(() => field.focus(), 50);
+  } else {
+    inputRow.style.display = "none";
+  }
 }
 
 function hideInputPane() {
@@ -576,11 +698,28 @@ function hideInputPane() {
   pane.classList.remove("active");
   pane.classList.add("idle");
   $("#chat-query").textContent = "";
+  const optionsEl = $("#chat-options");
+  optionsEl.style.display = "none";
+  optionsEl.innerHTML = "";
+  const inputRow = $("#chat-input-row");
+  inputRow.style.display = "flex";
   const field = $("#chat-field");
   field.value = "";
   field.disabled = true;
   field.placeholder = "Waiting for factory…";
   $("#chat-submit").disabled = true;
+}
+
+function submitOption(value) {
+  if (!state.activeRunId) return;
+  $$(".chat-opt-btn").forEach((b) => { b.disabled = true; });
+  fetch(`/api/runs/${state.activeRunId}/respond`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ response: value }),
+  })
+    .then(() => hideInputPane())
+    .catch(() => { $$(".chat-opt-btn").forEach((b) => { b.disabled = false; }); });
 }
 
 function submitInputPane() {

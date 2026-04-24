@@ -23,7 +23,7 @@ const crypto = require("crypto");
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
 const { fileAdapter } = require("./io/adapters/file");
-const { createPhaseDisplay, createTicker } = require("./display");
+const { createPhaseDisplay, createTicker, setRunDir } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
 const { readFile, writeFile, buildSystemPrompt, logEvent, claudeCall, claudeTurn } = require("./runner-utils");
 
@@ -121,6 +121,7 @@ async function main() {
   const resumeIndex = args.indexOf("--run-id");
   const id = resumeIndex >= 0 ? args[resumeIndex + 1] : runId();
   const runDir = path.join(RUNS_DIR, id);
+  setRunDir(runDir);
   const io = process.env.DARK_ROOM_IO === "file"
     ? createInteraction(fileAdapter(runDir))
     : createInteraction(cliAdapter());

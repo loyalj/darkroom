@@ -11,11 +11,14 @@ function fileAdapter(runDir) {
   return {
     turn(prompt, opts = {}) {
       const display = opts.context ?? prompt;
-      fs.writeFileSync(
-        pendingPath,
-        JSON.stringify({ prompt: display, type: "text", ts: new Date().toISOString() }),
-        "utf8"
-      );
+      const payload = { prompt: display, ts: new Date().toISOString() };
+      if (opts.options && opts.options.length > 0) {
+        payload.type = opts.hybrid ? "hybrid" : "options";
+        payload.options = opts.options;
+      } else {
+        payload.type = "text";
+      }
+      fs.writeFileSync(pendingPath, JSON.stringify(payload), "utf8");
 
       return new Promise((resolve) => {
         pollTimer = setInterval(() => {

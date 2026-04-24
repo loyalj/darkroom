@@ -13,6 +13,27 @@
  */
 
 const { spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+
+// ---------------------------------------------------------------------------
+// Activity log — dual-write to file alongside terminal output
+// ---------------------------------------------------------------------------
+
+let _runDir = null;
+
+function setRunDir(dir) { _runDir = dir; }
+
+function writeActivity(event) {
+  if (!_runDir) return;
+  try {
+    fs.appendFileSync(
+      path.join(_runDir, "activity.jsonl"),
+      JSON.stringify({ ts: new Date().toISOString(), ...event }) + "\n",
+      "utf8"
+    );
+  } catch {}
+}
 
 // ---------------------------------------------------------------------------
 // ANSI helpers
@@ -63,6 +84,8 @@ function createPhaseDisplay(department, phaseName, phaseStep = "", subtitle = ""
   const rows = process.stdout.rows || 40;
   let currentStatus = subtitle;
   let finished = false;
+
+  writeActivity({ type: "step", dept: department, phase: phaseName, step: phaseStep, status: subtitle });
 
   function width() { return process.stdout.columns || 100; }
 
@@ -123,11 +146,14 @@ function createPhaseDisplay(department, phaseName, phaseStep = "", subtitle = ""
     update(status) {
       currentStatus = status;
       renderHeader();
+      writeActivity({ type: "status", dept: department, phase: phaseName, step: phaseStep, status });
     },
 
-    log(line) {
+    log(line, opts = {}) {
       // Write a line to the scroll region (cursor is already there)
       process.stdout.write(line + "\n");
+      const text = stripAnsi(line).trim();
+      if (text) writeActivity({ type: "line", ...(opts.subtype ? { subtype: opts.subtype } : {}), text });
     },
 
     finish(summary) {
@@ -141,6 +167,7 @@ function createPhaseDisplay(department, phaseName, phaseStep = "", subtitle = ""
       // Show ✓ summary on the status line (row 4) by passing as overrideStatus
       currentStatus = `${A.green("✓")} ${summary || "done"}  —  ${elapsed}`;
       renderHeader(currentStatus);
+      writeActivity({ type: "finish", dept: department, phase: phaseName, summary: stripAnsi(summary ?? "done") });
       // Reset scroll region so the next phase (or plain console output) starts clean.
       process.stdout.write(A.resetScroll + A.moveTo(rows, 1) + "\n");
     },
@@ -287,6 +314,7 @@ function formatStreamEvent(event, display) {
 function createTicker(label) {
   const start = Date.now();
   process.stdout.write(`  ${label}...`);
+  writeActivity({ type: "ticker", label });
   const interval = setInterval(() => {
     const s = Math.floor((Date.now() - start) / 1000);
     process.stdout.write(`\r  ${label}... ${s}s`);
@@ -297,10 +325,12 @@ function createTicker(label) {
       clearInterval(interval);
       const s = Math.floor((Date.now() - start) / 1000);
       process.stdout.write(`\r  ${A.green("✓")} ${summary || label} (${s}s)\n`);
+      writeActivity({ type: "ticker-done", label, summary: summary ?? "" });
     },
     fail(reason) {
       clearInterval(interval);
       process.stdout.write(`\r  ${A.red("✗")} ${reason}\n`);
+      writeActivity({ type: "ticker-fail", label, reason });
     },
   };
 }
@@ -331,4 +361,4 @@ function createPlainDisplay(department, phaseName, phaseStep = "", subtitle = ""
   };
 }
 
-module.exports = { createPhaseDisplay, createPlainDisplay, agentStream, createTicker, A, formatElapsed };
+module.exports = { createPhaseDisplay, createPlainDisplay, agentStream, createTicker, A, formatElapsed, setRunDir };

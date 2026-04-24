@@ -19,7 +19,8 @@ const fs = require("fs");
 const path = require("path");
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
-const { createPhaseDisplay, agentStream } = require("./display");
+const { fileAdapter } = require("./io/adapters/file");
+const { createPhaseDisplay, agentStream, setRunDir } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
 const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, claudeCall, collectSourceFiles, extractCompact } = require("./runner-utils");
 
@@ -193,7 +194,7 @@ async function humanCheckpoint(io, verdictReport, securityDir, runDir) {
     console.log("⚠  Security verdict is BLOCK. Critical findings must be resolved before shipping.\n");
     console.log("The build division will receive remediation requests.\n");
     if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"security-block"}\n');
-    await io.turn("Press Enter to write remediation requests and exit: ");
+    await io.turn("Press Enter to write remediation requests and exit: ", { options: ["continue"] });
     writeRemediationRequests(verdictReport, securityDir, runDir);
     return false;
   }
@@ -211,7 +212,7 @@ async function humanCheckpoint(io, verdictReport, securityDir, runDir) {
       if (process.env.FACTORY_AUTO === "1") {
         process.stdout.write(`FACTORY_SIGNAL:${JSON.stringify({ point: "security-finding", finding: finding.slice(0, 300) })}\n`);
       }
-      const decision = await io.turn("Accept this finding or send for fix? (accept / fix): ");
+      const decision = await io.turn("Accept this finding or send for fix? (accept / fix): ", { options: ["accept", "fix"], context: finding });
       if (decision.trim().toLowerCase() === "accept") {
         accepted.push(finding);
         logEvent(runDir, { phase: "security", event: "high-finding-accepted", finding: finding.slice(0, 100) });
@@ -234,7 +235,7 @@ async function humanCheckpoint(io, verdictReport, securityDir, runDir) {
   let approved = false;
   while (!approved) {
     if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"security-final-approval"}\n');
-    const input = await io.turn("Approve security review and proceed? (yes / no): ");
+    const input = await io.turn("Approve security review and proceed? (yes / no): ", { options: ["yes", "no"] });
     const trimmed = input.trim().toLowerCase();
 
     if (trimmed === "yes" || trimmed === "y") {
@@ -298,6 +299,7 @@ async function main() {
   const id = args[runIdIndex + 1];
   const caveman = args.includes("--caveman") || process.env.FACTORY_CAVEMAN === "1";
   const runDir = path.join(RUNS_DIR, id);
+  setRunDir(runDir);
   const handoffDir = path.join(runDir, "handoff");
   const artifactDir = path.join(runDir, "artifact");
   const securityDir = path.join(runDir, "security");
@@ -338,7 +340,9 @@ async function main() {
   const verdictReport = await runVerdictAgent(securityDir, staticReport, dynamicReport, caveman);
 
   // Phase 4: Human checkpoint
-  const io = createInteraction(cliAdapter());
+  const io = process.env.DARK_ROOM_IO === "file"
+    ? createInteraction(fileAdapter(runDir))
+    : createInteraction(cliAdapter());
   const approved = await humanCheckpoint(io, verdictReport, securityDir, runDir);
   io.close();
 

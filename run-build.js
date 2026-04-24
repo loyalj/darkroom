@@ -22,7 +22,8 @@ const fs = require("fs");
 const path = require("path");
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
-const { createPhaseDisplay, createPlainDisplay, agentStream, A, formatElapsed } = require("./display");
+const { fileAdapter } = require("./io/adapters/file");
+const { createPhaseDisplay, createPlainDisplay, agentStream, A, formatElapsed, setRunDir } = require("./display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
 const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, writeDecision, hr, claudeRaw, claudeCall, claudeTurn, runLockableInterview, claudeToolCallAsync, collectSourceFiles } = require("./runner-utils");
 
@@ -183,7 +184,7 @@ async function runArchitectInterview(io, runDir, buildSpec, factoryManifest) {
     lockedOutput = await runLockableInterview({
       systemPrompt, transcriptPath, display, io,
       agentName: "Architect",
-      lockSignalRe: /ready to lock the plan/i,
+      lockSignalRe: /ready to lock the plan|plan is locked|handing off to the implementation/i,
       lockConfirmPrompt: "Lock the plan?",
       executeLock,
       onUsage: (u) => logTokens(runDir, "Build", "Architect Interview", u),
@@ -448,7 +449,7 @@ async function runCopyWriter(io, buildDir, buildSpec, runDir) {
 
   while (!approved) {
     if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"copy-review"}\n');
-    const input = await io.turn("Approve copy? (yes / no + feedback): ");
+    const input = await io.turn("Approve copy? (yes / no + feedback): ", { options: ["yes"], hybrid: true });
     const trimmed = input.trim().toLowerCase();
 
     if (trimmed === "yes" || trimmed === "y") {
@@ -782,7 +783,10 @@ async function main() {
 
   const id = args[runIdIndex + 1];
   const runDir = path.join(RUNS_DIR, id);
-  const io = createInteraction(cliAdapter());
+  setRunDir(runDir);
+  const io = process.env.DARK_ROOM_IO === "file"
+    ? createInteraction(fileAdapter(runDir))
+    : createInteraction(cliAdapter());
   const handoffDir = path.join(runDir, "handoff");
   const buildDir = path.join(runDir, "build");
   const artifactDir = path.join(runDir, "artifact");
