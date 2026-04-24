@@ -17,19 +17,19 @@
 
 const fs = require("fs");
 const path = require("path");
-const { createInteraction } = require("./io/interaction");
-const { cliAdapter } = require("./io/adapters/cli");
-const { fileAdapter } = require("./io/adapters/file");
-const { createPhaseDisplay, agentStream, setRunDir } = require("./display");
-const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, claudeCall, collectSourceFiles, extractCompact } = require("./runner-utils");
+const { createInteraction } = require("../io/interaction");
+const { cliAdapter } = require("../io/adapters/cli");
+const { fileAdapter } = require("../io/adapters/file");
+const { createPhaseDisplay, agentStream, setRunDir } = require("../lib/display");
+const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
+const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, claudeCall, collectSourceFiles, extractCompact } = require("../lib/runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const AGENTS_DIR = path.join(__dirname, "agents");
-const RUNS_DIR = path.join(__dirname, "runs");
+const AGENTS_DIR = path.join(__dirname, "..", "agents");
+const RUNS_DIR = path.join(__dirname, "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md");
 
@@ -269,8 +269,8 @@ function writeRemediationRequests(verdictReport, securityDir, runDir, specificFi
 
   const id = path.basename(runDir);
   console.log(`\nRemediation requests written to runs/${id}/security-remediations/`);
-  console.log(`\nTo re-run build after fixes: node run-build.js --run-id ${id}`);
-  console.log(`Then re-run security: node run-security.js --run-id ${id}\n`);
+  console.log(`\nTo re-run build after fixes: node departments/run-build.js --run-id ${id}`);
+  console.log(`Then re-run security: node departments/run-security.js --run-id ${id}\n`);
 }
 
 function extractHighFindings(verdictReport) {

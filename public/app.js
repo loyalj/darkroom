@@ -684,7 +684,7 @@ function showInputPane(prompt, options = null, type = "text") {
     const field = $("#chat-field");
     field.value = "";
     field.disabled = false;
-    field.placeholder = "Type your response… (Ctrl+Enter to send)";
+    field.placeholder = "Type your response… (Enter to send, Shift+Enter for new line)";
     $("#chat-submit").disabled = false;
     setTimeout(() => field.focus(), 50);
   } else {
@@ -769,7 +769,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Chat input pane
   $("#chat-submit").addEventListener("click", submitInputPane);
   $("#chat-field").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submitInputPane();
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitInputPane(); }
   });
 
   // Chat pane drag-to-resize

@@ -15,7 +15,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { A } = require("./display");
+const { A } = require("./lib/display");
 
 const RUNS_DIR = path.join(__dirname, "runs");
 

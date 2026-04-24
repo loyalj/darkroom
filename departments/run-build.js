@@ -20,19 +20,19 @@
 
 const fs = require("fs");
 const path = require("path");
-const { createInteraction } = require("./io/interaction");
-const { cliAdapter } = require("./io/adapters/cli");
-const { fileAdapter } = require("./io/adapters/file");
-const { createPhaseDisplay, createPlainDisplay, agentStream, A, formatElapsed, setRunDir } = require("./display");
-const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, writeDecision, hr, claudeRaw, claudeCall, claudeTurn, runLockableInterview, claudeToolCallAsync, collectSourceFiles } = require("./runner-utils");
+const { createInteraction } = require("../io/interaction");
+const { cliAdapter } = require("../io/adapters/cli");
+const { fileAdapter } = require("../io/adapters/file");
+const { createPhaseDisplay, createPlainDisplay, agentStream, A, formatElapsed, setRunDir } = require("../lib/display");
+const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
+const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, writeDecision, hr, claudeRaw, claudeCall, claudeTurn, runLockableInterview, claudeToolCallAsync, collectSourceFiles } = require("../lib/runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const AGENTS_DIR = path.join(__dirname, "agents");
-const RUNS_DIR = path.join(__dirname, "runs");
+const AGENTS_DIR = path.join(__dirname, "..", "agents");
+const RUNS_DIR = path.join(__dirname, "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md");
 const RETRY_BUDGET = 3;
@@ -43,7 +43,7 @@ const RETRY_BUDGET = 3;
 // ---------------------------------------------------------------------------
 
 const ARCHITECT_AUTO_MAX_TURNS = 6;
-const BRAIN_PATH = path.join(__dirname, "brain.md");
+const BRAIN_PATH = path.join(__dirname, "..", "org/ceo/brain.md");
 
 async function runArchitectAutoLoop(runDir, architectSystemPrompt, history, firstAgentTurn, transcriptPath, buildSpec, factoryManifest, executeLock, display) {
   const brainContent = fileExists(BRAIN_PATH) ? readFile(BRAIN_PATH) : "";
@@ -94,14 +94,14 @@ async function runArchitectAutoLoop(runDir, architectSystemPrompt, history, firs
     }
 
     // Brain has feedback — send it back to architect as the "user" turn
-    display.log(`\nBrain: ${clipForDisplay(reviewerResponse)}\n`);
+    display.log(`\nBrain: ${clipForDisplay(reviewerResponse)}\n`, { subtype: "interview" });
     fs.appendFileSync(transcriptPath, `\n## User\n\n${reviewerResponse.trim()}\n`);
     currentHistory.push({ role: "user", content: reviewerResponse });
 
     display.update("thinking...");
     agentTurn = claudeTurn(architectSystemPrompt, currentHistory);
     display.update("brain reviewing...");
-    display.log(`\nArchitect: ${clipForDisplay(agentTurn)}\n`);
+    display.log(`\nArchitect: ${clipForDisplay(agentTurn)}\n`, { subtype: "interview" });
     fs.appendFileSync(transcriptPath, `\n## Architect\n\n${agentTurn.trim()}\n`);
     currentHistory.push({ role: "assistant", content: agentTurn });
 
@@ -175,7 +175,7 @@ async function runArchitectInterview(io, runDir, buildSpec, factoryManifest) {
     display.update("thinking...");
     const firstTurn = claudeTurn(systemPrompt, [], (u) => logTokens(runDir, "Build", "Architect Interview", u));
     display.update("your turn");
-    display.log(`\nArchitect: ${clipForDisplay(firstTurn)}\n`);
+    display.log(`\nArchitect: ${clipForDisplay(firstTurn)}\n`, { subtype: "interview" });
     fs.appendFileSync(transcriptPath, `\n## Architect\n\n${firstTurn.trim()}\n`);
     lockedOutput = await runArchitectAutoLoop(
       runDir, systemPrompt, [{ role: "assistant", content: firstTurn }], firstTurn, transcriptPath, buildSpec, factoryManifest, executeLock, display

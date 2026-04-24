@@ -20,19 +20,19 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { createInteraction } = require("./io/interaction");
-const { cliAdapter } = require("./io/adapters/cli");
-const { fileAdapter } = require("./io/adapters/file");
-const { createPhaseDisplay, createTicker, setRunDir } = require("./display");
-const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("./token-log");
-const { readFile, writeFile, buildSystemPrompt, logEvent, claudeCall, claudeTurn } = require("./runner-utils");
+const { createInteraction } = require("../io/interaction");
+const { cliAdapter } = require("../io/adapters/cli");
+const { fileAdapter } = require("../io/adapters/file");
+const { createPhaseDisplay, createTicker, setRunDir } = require("../lib/display");
+const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
+const { readFile, writeFile, buildSystemPrompt, logEvent, claudeCall, claudeTurn } = require("../lib/runner-utils");
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const AGENTS_DIR = path.join(__dirname, "agents");
-const RUNS_DIR = path.join(__dirname, "runs");
+const AGENTS_DIR = path.join(__dirname, "..", "agents");
+const RUNS_DIR = path.join(__dirname, "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(
   AGENTS_DIR,
@@ -68,7 +68,7 @@ async function runInterviewPhase(io, display, agentPromptPath, systemContext, tr
   display.update("thinking...");
   let agentTurn = claudeTurn(systemPrompt, conversationHistory, onUsage);
   display.update("your turn");
-  display.log(`\nAgent: ${agentTurn}\n`);
+  display.log(`\nAgent: ${agentTurn}\n`, { subtype: "interview" });
   appendTranscript(transcriptPath, "Agent", agentTurn);
   conversationHistory.push({ role: "assistant", content: agentTurn });
 
@@ -82,7 +82,7 @@ async function runInterviewPhase(io, display, agentPromptPath, systemContext, tr
     display.update("thinking...");
     agentTurn = claudeTurn(systemPrompt, conversationHistory, onUsage);
     display.update("your turn");
-    display.log(`\nAgent: ${agentTurn}\n`);
+    display.log(`\nAgent: ${agentTurn}\n`, { subtype: "interview" });
     appendTranscript(transcriptPath, "Agent", agentTurn);
     conversationHistory.push({ role: "assistant", content: agentTurn });
 
@@ -277,7 +277,7 @@ async function main() {
   console.log(`  Design Division complete.`);
   console.log(`  Run: ${id}`);
   console.log(`${"─".repeat(60)}\n`);
-  console.log("Proceed to build: node run-build.js --run-id " + id + "\n");
+  console.log("Proceed to build: node departments/run-build.js --run-id " + id + "\n");
 
   logEvent(runDir, { phase: "design", event: "design-division-complete" });
   io.close();

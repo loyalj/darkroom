@@ -65,7 +65,7 @@ function readBudgetLimit(dir) {
     }
   } catch {}
   try {
-    const brainCfg = path.join(__dirname, "brain-config.json");
+    const brainCfg = path.join(__dirname, "org/ceo/brain-config.json");
     if (fs.existsSync(brainCfg)) {
       const cfg = JSON.parse(fs.readFileSync(brainCfg, "utf8"));
       if (cfg.tokenLimitPerRun != null) return { limit: cfg.tokenLimitPerRun, source: "global brain" };

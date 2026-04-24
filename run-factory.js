@@ -23,11 +23,11 @@ const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { fileExists, logEvent, writeDecision, readFile, writeFile, buildSystemPrompt, clipForDisplay, claudeRaw, claudeCall, claudeTurn, runLockableInterview } = require("./runner-utils");
+const { fileExists, logEvent, writeDecision, readFile, writeFile, buildSystemPrompt, clipForDisplay, claudeRaw, claudeCall, claudeTurn, runLockableInterview } = require("./lib/runner-utils");
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
 const { fileAdapter } = require("./io/adapters/file");
-const { A, createPhaseDisplay, setRunDir } = require("./display");
+const { A, createPhaseDisplay, setRunDir } = require("./lib/display");
 
 // Module-level io and mode — set once in main(), shared by escalate(), checkBudget(), etc.
 let io   = null;
@@ -39,7 +39,7 @@ function createIO(runDir) {
 }
 
 const RUNS_DIR    = path.join(__dirname, "runs");
-const BRAIN_PATH  = path.join(__dirname, "brain.md");
+const BRAIN_PATH  = path.join(__dirname, "org/ceo/brain.md");
 const AGENTS_DIR  = path.join(__dirname, "agents");
 const DIVISIONS   = ["Design", "Build", "Review", "Security"];
 const MAX_LOOPS   = 3;
@@ -480,7 +480,7 @@ function logTokens(label, usage) {
     cacheRead:  usage?.cache_read_input_tokens  ?? 0,
     cacheWrite: usage?.cache_creation_input_tokens ?? 0,
   });
-  const logPath = path.join(__dirname, "brain-token-usage.jsonl");
+  const logPath = path.join(__dirname, "org/ceo/brain-token-usage.jsonl");
   fs.appendFileSync(logPath, entry + "\n");
 }
 
@@ -490,7 +490,7 @@ async function runBrainInterview(runDir) {
     return;
   }
 
-  const transcriptPath = path.join(__dirname, "brain-transcript.md");
+  const transcriptPath = path.join(__dirname, "org/ceo/brain-transcript.md");
 
   // Recovery: transcript exists from a previous session but brain.md was never written.
   // Skip the interview entirely and re-run only the lock step.
@@ -516,7 +516,7 @@ async function runBrainInterview(runDir) {
     }
     writeFile(BRAIN_PATH, lockedOutput.brain);
     if (lockedOutput.config) {
-      writeFile(path.join(__dirname, "brain-config.json"), JSON.stringify(lockedOutput.config, null, 2));
+      writeFile(path.join(__dirname, "org/ceo/brain-config.json"), JSON.stringify(lockedOutput.config, null, 2));
     }
     display.finish("brain.md recovered");
     console.log(`\n  ${A.dim("Brain saved to brain.md — this will be used for all future auto decisions.")}\n`);
@@ -566,7 +566,7 @@ async function runBrainInterview(runDir) {
 
   writeFile(BRAIN_PATH, lockedOutput.brain);
   if (lockedOutput.config) {
-    writeFile(path.join(__dirname, "brain-config.json"), JSON.stringify(lockedOutput.config, null, 2));
+    writeFile(path.join(__dirname, "org/ceo/brain-config.json"), JSON.stringify(lockedOutput.config, null, 2));
   }
   display.finish("brain.md written");
   io.close();
@@ -716,7 +716,7 @@ function readBudgetLimit(runDir) {
     if (cfg.tokenLimit != null && cfg.tokenLimit !== 0) return { limit: cfg.tokenLimit, source: "run brain" };
     if (cfg.tokenLimit === 0) return { limit: null, source: "run brain (no limit)" };
   }
-  const brainCfgPath = path.join(__dirname, "brain-config.json");
+  const brainCfgPath = path.join(__dirname, "org/ceo/brain-config.json");
   if (fileExists(brainCfgPath)) {
     const cfg = JSON.parse(fs.readFileSync(brainCfgPath, "utf8"));
     if (cfg.tokenLimitPerRun != null) return { limit: cfg.tokenLimitPerRun, source: "global brain" };
@@ -733,8 +733,8 @@ async function runBuildWithFeedback(runId, runDir, mode) {
 
   while (true) {
     const exitCode = mode === "auto"
-      ? await runDivisionAuto("run-build.js", ["--run-id", runId], (sig) => handleBuildSignal(runDir, sig), runDir)
-      : runDivision("run-build.js", ["--run-id", runId]);
+      ? await runDivisionAuto("departments/run-build.js", ["--run-id", runId], (sig) => handleBuildSignal(runDir, sig), runDir)
+      : runDivision("departments/run-build.js", ["--run-id", runId]);
 
     // Clear any frozen phase-display header left on screen by the child process.
     process.stdout.write(A.resetScroll + A.moveTo(1, 1) + A.clearToEnd);
@@ -865,7 +865,7 @@ function readLoopLimit(runDir) {
       if (cfg.maxLoopsBeforeEscalate != null) return cfg.maxLoopsBeforeEscalate;
     } catch {}
   }
-  const brainCfgPath = path.join(__dirname, "brain-config.json");
+  const brainCfgPath = path.join(__dirname, "org/ceo/brain-config.json");
   if (fileExists(brainCfgPath)) {
     try {
       const cfg = JSON.parse(fs.readFileSync(brainCfgPath, "utf8"));
@@ -942,7 +942,7 @@ async function main() {
 
   if (!designDone) {
     banner(runDir, "Design");
-    if (runDivision("run-design.js", ["--run-id", runId]) !== 0) {
+    if (runDivision("departments/run-design.js", ["--run-id", runId]) !== 0) {
       abort(runDir, "Design", "Exiting.", 1);
     }
     logEvent(runDir, { phase: "factory", event: "division-complete", division: "design" });
@@ -995,8 +995,8 @@ async function main() {
       // Review
       banner(runDir, "Review", loopNote);
       const reviewExit = mode === "auto"
-        ? await runDivisionAuto("run-review.js", ["--run-id", runId], (sig) => handleReviewSignal(runDir, sig), runDir)
-        : runDivision("run-review.js", ["--run-id", runId]);
+        ? await runDivisionAuto("departments/run-review.js", ["--run-id", runId], (sig) => handleReviewSignal(runDir, sig), runDir)
+        : runDivision("departments/run-review.js", ["--run-id", runId]);
       if (reviewExit !== 0) abort(runDir, "Review", "Exiting.", loop);
       logEvent(runDir, { phase: "factory", event: "division-complete", division: "review", loop });
       await checkBudget(runDir, `after Review (loop ${loop})`);
@@ -1056,8 +1056,8 @@ async function main() {
       // Security
       banner(runDir, "Security", loopNote);
       const code = mode === "auto"
-        ? await runDivisionAuto("run-security.js", ["--run-id", runId], (sig) => handleSecuritySignal(runDir, sig), runDir)
-        : runDivision("run-security.js", ["--run-id", runId]);
+        ? await runDivisionAuto("departments/run-security.js", ["--run-id", runId], (sig) => handleSecuritySignal(runDir, sig), runDir)
+        : runDivision("departments/run-security.js", ["--run-id", runId]);
       logEvent(runDir, { phase: "factory", event: "division-complete", division: "security", loop });
       await checkBudget(runDir, `after Security (loop ${loop})`);
 
