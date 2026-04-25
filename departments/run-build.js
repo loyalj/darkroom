@@ -27,6 +27,7 @@ const { createPhaseDisplay, createPlainDisplay, agentStream, A, formatElapsed, s
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
 const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, writeDecision, hr, runLockableInterview, collectSourceFiles } = require("../lib/runner-utils");
 const { claudeRaw, claudeCall, claudeTurn, claudeToolCallAsync } = require("../adapters/claude-cli");
+const { runReflector } = require("../lib/memory");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -37,6 +38,9 @@ const RUNS_DIR = path.join(__dirname, "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md");
 const RETRY_BUDGET = 3;
+
+// Memory context — loaded once at startup from memory-context.md written by graph executor.
+let memoryContext = null;
 
 
 // ---------------------------------------------------------------------------
@@ -146,7 +150,8 @@ async function runArchitectInterview(io, runDir, buildSpec, factoryManifest) {
     readFile(SHARED_OUTPUT_FORMATS),
     readFile(path.join(AGENTS_DIR, "build", "architect.md")),
     `## Build Spec\n\n${buildSpec}`,
-    `## Factory Manifest\n\n${JSON.stringify(factoryManifest, null, 2)}`
+    `## Factory Manifest\n\n${JSON.stringify(factoryManifest, null, 2)}`,
+    memoryContext
   );
 
   const display = createPhaseDisplay("Build", "Architect Interview", "1 of 6", "thinking...", { onFinish: (ms) => logTime(runDir, "Build", "Architect Interview", ms) });
@@ -163,7 +168,8 @@ async function runArchitectInterview(io, runDir, buildSpec, factoryManifest) {
       readFile(path.join(AGENTS_DIR, "build", "architect.md")),
       `## Build Spec\n\n${buildSpec}`,
       `## Factory Manifest\n\n${JSON.stringify(factoryManifest, null, 2)}`,
-      `## Interview transcript\n\n${readFile(transcriptPath)}`
+      `## Interview transcript\n\n${readFile(transcriptPath)}`,
+      memoryContext
     );
     const result = claudeCall(lockPrompt,
       "The user has confirmed. Produce the locked architecture plan and task graph now as specified in your output format.",
@@ -252,8 +258,11 @@ async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, 
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "implementation.md"))
+    readFile(path.join(AGENTS_DIR, "build", "implementation.md")),
+    memoryContext
   );
+
+  const absoluteOutputs = (task.expectedOutputs || []).map((p) => path.join(srcDir, p));
 
   const userMessage = [
     `## Build Spec\n\n${buildSpec}`,
@@ -261,7 +270,7 @@ async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, 
     `## Your Task\n\n${JSON.stringify(task, null, 2)}`,
     relevantInterfaces,
     retryContext,
-    `## Working Directory\n\nWrite all output files to: ${srcDir}\n\nThe paths in expectedOutputs are relative to this directory.`,
+    `## File Paths\n\nAlways write files using ABSOLUTE paths. Never use relative paths.\n\nSource directory: ${srcDir}\n\nExpected output files (use these exact absolute paths):\n${absoluteOutputs.map((p) => `- ${p}`).join("\n")}`,
   ].filter(Boolean).join("\n\n---\n\n");
 
   const t0 = Date.now();
@@ -385,7 +394,8 @@ async function runIntegration(buildDir, buildSpec, architecturePlan, runDir) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "integration.md"))
+    readFile(path.join(AGENTS_DIR, "build", "integration.md")),
+    memoryContext
   );
 
   const userMessage = [
@@ -424,7 +434,8 @@ async function runCopyWriter(io, buildDir, buildSpec, runDir) {
     const systemPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "build", "copywriter.md"))
+      readFile(path.join(AGENTS_DIR, "build", "copywriter.md")),
+      memoryContext
     );
 
     const userMessage = [
@@ -463,7 +474,8 @@ async function runCopyWriter(io, buildDir, buildSpec, runDir) {
       const systemPrompt = buildSystemPrompt(
         readFile(SHARED_CONVENTIONS),
         readFile(SHARED_OUTPUT_FORMATS),
-        readFile(path.join(AGENTS_DIR, "build", "copywriter.md"))
+        readFile(path.join(AGENTS_DIR, "build", "copywriter.md")),
+        memoryContext
       );
 
       const srcDir = path.join(buildDir, "src");
@@ -521,7 +533,8 @@ async function runVerification(buildDir, buildSpec, runDir) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "verification.md"))
+    readFile(path.join(AGENTS_DIR, "build", "verification.md")),
+    memoryContext
   );
 
   const failingContext = previousReport
@@ -616,7 +629,8 @@ async function runFixAgent(buildDir, buildSpecPath, verificationReport, humanFee
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "fix.md"))
+    readFile(path.join(AGENTS_DIR, "build", "fix.md")),
+    memoryContext
   );
 
   const userMessage = [
@@ -653,7 +667,8 @@ async function runPackager(buildDir, artifactDir, runtimeSpec, runDir) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "packager.md"))
+    readFile(path.join(AGENTS_DIR, "build", "packager.md")),
+    memoryContext
   );
 
   const userMessage = [
@@ -738,7 +753,8 @@ async function runIncomingFixMode(io, buildDir, buildSpecPath, incomingFailures,
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "fix.md"))
+    readFile(path.join(AGENTS_DIR, "build", "fix.md")),
+    memoryContext
   );
 
   const userMessage = [
@@ -805,6 +821,9 @@ async function main() {
   const runtimeSpec = readFile(path.join(handoffDir, "runtime-spec.md"));
   const factoryManifest = readJSON(path.join(handoffDir, "factory-manifest.json"));
 
+  const memCtxPath = path.join(runDir, "memory-context.md");
+  memoryContext = fileExists(memCtxPath) ? readFile(memCtxPath) : null;
+
   console.log(`\nSoftware Factory — Build Division`);
   console.log(`Run: ${id}`);
   console.log(`Project: ${factoryManifest.projectName}\n`);
@@ -839,6 +858,16 @@ async function main() {
 
     writeTokenTable(runDir);
     writeTimeTable(runDir);
+
+    const taskGraph0 = fileExists(path.join(buildDir, "task-graph.json")) ? readJSON(path.join(buildDir, "task-graph.json")) : [];
+    const reflCtx0 = [
+      `## Run ID\n\n${id}`,
+      `## Factory Manifest\n\n${JSON.stringify(factoryManifest, null, 2)}`,
+      `## Outcome\n\nBuild completed in fix mode (incoming failure reports resolved).`,
+      `## Task Count\n\n${taskGraph0.length}`,
+    ].join("\n\n---\n\n");
+    await runReflector("build", runDir, reflCtx0, (u) => logTokens(runDir, "Build", "Wiki Reflector", u));
+
     console.log(`\n${hr()}`);
     console.log("  Build Division complete (fixes applied).");
     console.log(`  Run: ${id}`);
@@ -872,6 +901,18 @@ async function main() {
 
   writeTokenTable(runDir);
   writeTimeTable(runDir);
+
+  const taskGraphFinal = fileExists(path.join(buildDir, "task-graph.json")) ? readJSON(path.join(buildDir, "task-graph.json")) : [];
+  const verificationReport = fileExists(path.join(buildDir, "verification-report.json")) ? readJSON(path.join(buildDir, "verification-report.json")) : null;
+  const reflCtxFinal = [
+    `## Run ID\n\n${id}`,
+    `## Factory Manifest\n\n${JSON.stringify(factoryManifest, null, 2)}`,
+    `## Outcome\n\nBuild completed successfully.`,
+    `## Task Count\n\n${taskGraphFinal.length}`,
+    verificationReport ? `## Verification\n\n${verificationReport.summary.passed}/${verificationReport.summary.total} criteria passed` : null,
+  ].filter(Boolean).join("\n\n---\n\n");
+  await runReflector("build", runDir, reflCtxFinal, (u) => logTokens(runDir, "Build", "Wiki Reflector", u));
+
   console.log(`\n${hr()}`);
   console.log("  Build Division complete.");
   console.log(`  Run: ${id}`);

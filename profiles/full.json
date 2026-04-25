@@ -1,0 +1,55 @@
+{
+  "id": "full",
+  "name": "Full Factory Run",
+  "nodes": [
+    {
+      "id": "design",
+      "runner": "departments/run-design.js",
+      "skipIf": "handoff/build-spec.md",
+      "memory": {
+        "readWiki": ["design", "build", "review", "security"],
+        "readRuns": [],
+        "write": "design"
+      }
+    },
+    {
+      "id": "build",
+      "runner": "departments/run-build.js",
+      "skipIf": "artifact/MANIFEST.txt",
+      "feedbackLoop": true,
+      "memory": {
+        "readWiki": ["design", "build", "review", "security"],
+        "readRuns": ["design", "build", "review", "security"],
+        "write": "build"
+      }
+    },
+    {
+      "id": "review",
+      "runner": "departments/run-review.js",
+      "skipIfEvent": "ship-approved",
+      "memory": {
+        "readWiki": ["design", "build", "review", "security"],
+        "readRuns": ["design", "build", "review", "security"],
+        "write": "review"
+      }
+    },
+    {
+      "id": "security",
+      "runner": "departments/run-security.js",
+      "skipIfEvent": "security-approved",
+      "memory": {
+        "readWiki": ["design", "build", "review", "security"],
+        "readRuns": ["design", "build", "review", "security"],
+        "write": "security"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "design",   "to": "build",    "type": "forward" },
+    { "from": "build",    "to": "review",   "type": "forward" },
+    { "from": "review",   "to": "security", "type": "forward",  "on": "ship-approved" },
+    { "from": "review",   "to": "build",    "type": "backward", "on": "ship-rejected-no-ship", "context": "failure-reports/" },
+    { "from": "security", "to": "build",    "type": "backward", "on": "security-rejected",     "context": "security-remediations/" }
+  ],
+  "budgetCheckpoints": ["after:build", "after:review", "after:security"]
+}

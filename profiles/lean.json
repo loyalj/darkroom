@@ -1,0 +1,43 @@
+{
+  "id": "lean",
+  "name": "Lean Pipeline (no Security)",
+  "nodes": [
+    {
+      "id": "design",
+      "runner": "departments/run-design.js",
+      "skipIf": "handoff/build-spec.md",
+      "memory": {
+        "readWiki": ["design", "build", "review", "security"],
+        "readRuns": [],
+        "write": "design"
+      }
+    },
+    {
+      "id": "build",
+      "runner": "departments/run-build.js",
+      "skipIf": "artifact/MANIFEST.txt",
+      "feedbackLoop": true,
+      "memory": {
+        "readWiki": ["design", "build", "review", "security"],
+        "readRuns": ["design", "build", "review", "security"],
+        "write": "build"
+      }
+    },
+    {
+      "id": "review",
+      "runner": "departments/run-review.js",
+      "skipIfEvent": "ship-approved",
+      "memory": {
+        "readWiki": ["design", "build", "review", "security"],
+        "readRuns": ["design", "build", "review", "security"],
+        "write": "review"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "design", "to": "build",  "type": "forward" },
+    { "from": "build",  "to": "review", "type": "forward" },
+    { "from": "review", "to": "build",  "type": "backward", "on": "ship-rejected-no-ship", "context": "failure-reports/" }
+  ],
+  "budgetCheckpoints": ["after:build", "after:review"]
+}

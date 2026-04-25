@@ -195,7 +195,20 @@ function getRunFiles(runDir) {
 
 // Derive pipeline state from log events.
 function deriveState(logEvents) {
-  const phases = { design: "pending", build: "pending", review: "pending", security: "pending" };
+  const startEvent = logEvents.find((e) => e.phase === "factory" && e.event === "start");
+  const profileName = startEvent?.profile ?? "full";
+  let profileNodes = ["design", "build", "review", "security"];
+  try {
+    const profilePath = path.join(__dirname, "profiles", `${profileName}.json`);
+    if (fs.existsSync(profilePath)) {
+      const p = JSON.parse(fs.readFileSync(profilePath, "utf8"));
+      profileNodes = p.nodes.map((n) => n.id);
+    }
+  } catch {}
+
+  const phases = {};
+  for (const id of profileNodes) phases[id] = "pending";
+
   let currentStep = "Initializing";
   let loops = 0;
   let verdict = null;
@@ -244,7 +257,7 @@ function deriveState(logEvents) {
     }
   }
 
-  return { phases, currentStep, loops, verdict };
+  return { phases, currentStep, loops, verdict, profileNodes };
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +544,74 @@ app.get("/api/runs/:id/stream", (req, res) => {
     stopPendingInput();
     clearInterval(heartbeat);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Profiles
+// ---------------------------------------------------------------------------
+
+app.get("/api/profiles", (req, res) => {
+  const profilesDir = path.join(__dirname, "profiles");
+  if (!fs.existsSync(profilesDir)) return res.json([]);
+  const files = fs.readdirSync(profilesDir)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => {
+      const name = f.replace(/\.json$/, "");
+      try {
+        const profile = JSON.parse(fs.readFileSync(path.join(profilesDir, f), "utf8"));
+        return { name, nodeCount: profile.nodes?.length ?? 0 };
+      } catch {
+        return { name, nodeCount: 0, error: true };
+      }
+    });
+  res.json(files);
+});
+
+app.get("/api/profiles/:name", (req, res) => {
+  const { name } = req.params;
+  if (!/^[\w-]+$/.test(name)) return res.status(400).json({ error: "invalid name" });
+  const filePath = path.join(__dirname, "profiles", `${name}.json`);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: "not found" });
+  try {
+    res.json({ name, content: fs.readFileSync(filePath, "utf8") });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/profiles/:name", (req, res) => {
+  const { name } = req.params;
+  if (!/^[\w-]+$/.test(name)) return res.status(400).json({ error: "invalid name" });
+  const { content } = req.body ?? {};
+  if (typeof content !== "string") return res.status(400).json({ error: "content required" });
+  try { JSON.parse(content); } catch (e) {
+    return res.status(400).json({ error: `Invalid JSON: ${e.message}` });
+  }
+  try {
+    fs.writeFileSync(path.join(__dirname, "profiles", `${name}.json`), content, "utf8");
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Memory
+// ---------------------------------------------------------------------------
+
+app.get("/api/memory", (req, res) => {
+  const memoryDir = path.join(__dirname, "memory");
+  const deptIds = ["design", "build", "review", "security"];
+  const data = {};
+  for (const dept of deptIds) {
+    const deptDir = path.join(memoryDir, dept);
+    const wikiPath = path.join(deptDir, "wiki.md");
+    const runsPath = path.join(deptDir, "runs.jsonl");
+    const wiki = fs.existsSync(wikiPath) ? fs.readFileSync(wikiPath, "utf8") : null;
+    const runs = fs.existsSync(runsPath) ? parseJsonLines(runsPath) : [];
+    data[dept] = { wiki, runs };
+  }
+  res.json({ departments: deptIds, data });
 });
 
 // ---------------------------------------------------------------------------

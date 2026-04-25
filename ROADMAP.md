@@ -125,9 +125,10 @@ Steps completed:
 
 ---
 
-### Phase 3 — Pipeline Graph: Schema Design
+### Phase 3 — Pipeline Graph: Schema Design ✓ COMPLETE
 **Type:** Design work. No code.
 **Depends on:** Phase 1 complete, clear head
+**Completed:** 2026-04-24
 
 The goal is to encode the hardcoded Design → Build → Review → Security sequence as a
 data-driven directed graph. Before coding, the schema and routing protocol need to be decided.
@@ -195,18 +196,20 @@ enforced by the executor (that comes later if needed).
 }
 ```
 
-Open questions to resolve during schema design:
-- How is `--stop-after` expressed in the graph model? (Probably a runtime flag, not a profile property)
-- How does the `verification-feedback` loop (exit code 43, build-internal) fit? It's a loop
-  *inside* a node rather than between nodes — may stay as internal runner logic
-- How are `budgetCheckpoints` declared — per edge, per node, or a separate list?
-- Does `skipIf` check file existence, or should it read the log for a completion event?
+Open questions resolved:
+- `--stop-after`: Runtime flag only, not in profile. Executor exits after named node.
+- Exit code 43 loop: `"feedbackLoop": true` on build node; executor wraps it in `runBuildWithFeedback`.
+- `budgetCheckpoints`: Top-level list with `"after:{nodeId}"` syntax.
+- `skipIf`: File existence (relative to run dir). `skipIfEvent`: Log event name.
+  Both skip only on non-backward-edge entry; loopback always runs the node.
+- `maxLoops`: Not in profile — executor reads `maxLoopsBeforeEscalate` from run/brain config.
 
 ---
 
-### Phase 4 — Pipeline Graph: Executor + `full.json`
+### Phase 4 — Pipeline Graph: Executor + `full.json` ✓ COMPLETE
 **Type:** Implementation.
 **Depends on:** Phase 3 schema finalized
+**Completed:** 2026-04-24
 
 Build the graph executor in `lib/graph.js` (or `lib/graph/` if it grows):
 
@@ -224,18 +227,80 @@ Responsibilities:
 Translate the current hardcoded factory sequence into `profiles/full.json`. All existing behavior
 must be preserved exactly — this is a refactor, not a feature.
 
+Steps completed:
+- Created `profiles/full.json` with finalized schema (nodes, edges, budgetCheckpoints)
+- Created `lib/graph.js`: graph executor, all division runners, budget/loop/escalation logic,
+  all auto-decision and signal-handler functions moved from `run-factory.js`
+- `run-factory.js` slimmed to ~270 lines: parseArgs, brain interviews, writeLedgerEntry, main
+- Leadership steps (run-brain interview) wired via `onNodeComplete("design")` callback
+
 ---
 
-### Phase 5 — Pipeline Graph: Second Profile Validation
+### Phase 5 — Pipeline Graph: Second Profile Validation ✓ COMPLETE
 **Type:** Validation.
 **Depends on:** Phase 4
+**Completed:** 2026-04-25
 
-Add `profiles/incremental.json` (Build → Review → Security — no Design node). If implementing
-this profile requires touching department runners, the handoff contracts aren't clean enough and
-need to be addressed before more profiles are added.
+Steps completed:
+- Added `--profile <name>` flag to `run-factory.js` (`parseArgs` + dynamic profile load)
+- Profile shown in startup banner; defaults to `full` with no behavior change
+- Created `profiles/lean.json`: Design → Build → Review (no Security)
+  - Exercises terminal routing: review emits `ship-approved` with no forward edge → executor
+    exits cleanly via `if (!nextEdge) break`
+  - Backward edge (review → build on `ship-rejected-no-ship`) preserved
+  - Budget checkpoints after Build and Review only
+- No changes to any department runner — handoff contracts held cleanly
 
-This phase proves the graph generalizes. If it's clean, the graph model is correct. If it
-requires hacks, Phase 3 needs revisiting.
+---
+
+### Phase 5b — Upgrade Pipeline (Deferred)
+**Type:** New feature. Documented but not yet implemented.
+**Depends on:** Phase 5
+**Deferred until:** Phases 6–7 complete. Factory stays greenfield-only for now.
+
+The factory currently builds software from scratch. Phase 5b introduces a parallel path for
+updating existing code, keeping greenfield and brownfield concerns in separate departments.
+
+#### Core concept
+
+A new **Update department** (`departments/run-update.js`) is a brownfield specialist:
+- Loads the artifact and specs from a previous run (`--base-run-id <id>`)
+- Interviews the user: "what do you want to change, add, or remove?"
+- Applies targeted changes to the existing code in the new run directory
+- Hands off to Review/Security as normal
+
+**Build stays unchanged** — it remains a greenfield specialist that writes code from scratch.
+The profile selects which department runs, not a flag inside build.
+
+New profile `profiles/upgrade.json`:
+```
+update → review → security
+```
+
+The update department is self-contained (owns both the interview and the code modification),
+so it does not depend on design running first. The upgrade profile omits design entirely.
+
+#### Longer-term path: GitHub repo maintenance
+
+The upgrade profile is the foundation for a higher-level code maintenance capability:
+
+1. **Analyze department** — reads an external codebase, produces a spec-equivalent manifest.
+   Without this, the update interviewer has no understanding of what it's modifying.
+   Profile becomes: `analyze → update → review → security`
+
+2. **GitHub adapter** (`adapters/github.js`) — clones a repo into the run directory before
+   the pipeline starts. Same adapter pattern as Phase 2. Handles auth, branch selection,
+   and optionally pushes results back as a PR.
+
+3. **Scale** — real repos require context chunking, file-tree summarization, and surgical
+   (not rewrite) change behavior from the update department.
+
+4. **Control plane integration** — GitHub webhooks trigger runs automatically. The factory
+   becomes a background service rather than a CLI tool. This connects to the control plane
+   concept already documented in Evolution Concepts below.
+
+The critical bottleneck is the Analyze department: if it cannot produce a reliable
+spec-equivalent from unknown code, every downstream step inherits the error.
 
 ---
 
@@ -243,16 +308,86 @@ requires hacks, Phase 3 needs revisiting.
 **Type:** New feature. Non-breaking addition.
 **Depends on:** Phase 1 (directories exist)
 
-Add read/write logic for department memory wikis (`memory/{dept}/`) and role memory
-(`org/{role}/memory/`). At the end of each run, departments append to their wiki with patterns,
-gotchas, and outcomes. At the start of each run, relevant wiki entries are injected into agent
-context.
+Each department accumulates two memory files in `memory/{dept}/`:
+- `runs.jsonl` — structured run records, always written, every run. Timestamp, run ID, project
+  type, tech stack, outcome, loop count, events fired. Machine-queryable; not injected directly.
+- `wiki.md` — narrative craft knowledge. Written only when there is a genuine insight: patterns,
+  gotchas, things the next run should know. Injected directly into agent system prompts as prose.
 
-Design questions to resolve:
-- What format? Append-only `.md` files, or structured `.jsonl` for queryability?
-- What triggers a write? End of department run, or specific agent signal?
-- How is context injection scoped — full wiki, or a recency/relevance slice?
-- Memory hygiene: how does stale or noisy content get pruned?
+The wiki reflector agent (one per department) runs at the end of each department's work. It reads
+the run's outputs and produces: (a) a JSONL record always, and (b) a wiki paragraph only if
+something worth capturing happened. Empty runs still get a JSONL record; the wiki stays
+signal-dense.
+
+#### Memory access: defined in profile schema
+
+Read/write permissions are declared on each node in the profile JSON — not hardcoded in runners.
+The graph executor reads the node's `memory` config, builds the memory block before spawning the
+department, and writes it to `runs/{id}/memory-{nodeId}.md`. The department runner injects
+whatever the executor prepared into every agent call. No hardcoded reads in any runner.
+
+Node schema addition:
+```json
+{
+  "id": "design",
+  "memory": {
+    "readWiki": ["design", "build", "review", "security"],
+    "readRuns": [],
+    "write": "design"
+  }
+}
+```
+
+- `readWiki`: departments whose `wiki.md` to include in context
+- `readRuns`: departments whose `runs.jsonl` summary to include in context
+- `write`: department namespace this node appends to (always own, explicit for graph editors)
+
+Default access by department:
+- **design**: `readWiki` all, `readRuns` none — wikis inform interview strategy; run logs are
+  too technical for conversational agents
+- **build / review / security**: `readWiki` all, `readRuns` all — full picture for analytical agents
+
+#### Injection split
+
+Two injection modes depending on agent role:
+- **Interview agents** (design's functional and experience interviewers): wiki MD only.
+  Injecting run log summaries risks pulling conversational agents toward metadata pattern-matching.
+- **All other agents** (spec writer, architecture, implementation, reviewer, security auditor):
+  full block — wiki MD for all declared departments + a summary derived from recent JSONL records.
+
+Cross-department wiki reading is intentional. Example: the security wiki accumulates entries like
+"auth systems consistently arrive without rate limiting requirements." The design interviewer reads
+this and starts asking about rate limiting thresholds during the functional interview — shifting
+security from reactive (post-build finding) to proactive (captured in spec). Wiki reflector prompts
+for each department are written with downstream consumers in mind: entries describe patterns and
+what questions to ask, not what a specific user answered.
+
+#### Memory hygiene
+
+Manual for now. JSONL metadata supports automated hygiene later (consolidate repeated patterns,
+archive stale entries). Not needed until the wiki grows large enough to matter.
+
+#### GUI: Factory Memory viewer
+
+A new left-nav section — "Factory Memory" — peer with Run Viewer and Run Browser.
+
+Two-layer tab UI (same pattern as the run viewer doc panel):
+- **Top row**: department pills — Design | Build | Review | Security
+- **Second row**: Wiki | Run Log
+
+**Wiki tab**: renders `wiki.md` as markdown (same `marked.js` path as the doc viewer).
+
+**Run Log tab**: JSONL records rendered as a summary list. Each row shows timestamp, run ID,
+project name, and outcome. Clicking a row expands it to show the full JSONL record. Run IDs
+are clickable and open that run in the Run Viewer.
+
+**Empty state**: when no runs have completed yet and the wikis are empty, show a friendly
+placeholder explaining what the Factory Memory section becomes over time. Never leave users on
+a blank screen with empty controls.
+
+**Data loading**: memory is global, not run-specific — fetched via `GET /api/memory` when the
+user switches to the Factory Memory view. A refresh button covers the case where a run just
+completed and the user wants to see what was newly learned. No SSE involvement.
 
 ---
 
@@ -310,14 +445,16 @@ intentionally as the system becomes more autonomous.
 ## Sequencing Summary
 
 ```
-Phase 1  Directory restructure              low risk    standalone
-Phase 2  Execution adapter extraction       medium      after Phase 1
-Phase 3  Pipeline graph schema design       design      after Phase 1, no code
-Phase 4  Graph executor + full.json         medium      after Phase 3
-Phase 5  Second profile validation          low         after Phase 4
-Phase 6  Memory wiki infrastructure         medium      after Phase 1
-Phase 7  Org chart / specialist brains      high        after Phase 6
+Phase 1   Directory restructure              low risk    standalone
+Phase 2   Execution adapter extraction       medium      after Phase 1
+Phase 3   Pipeline graph schema design       design      after Phase 1, no code
+Phase 4   Graph executor + full.json         medium      after Phase 3
+Phase 5   Second profile validation          low         after Phase 4
+Phase 5b  Upgrade pipeline                   deferred    after Phase 5, pending 6–7
+Phase 6   Memory wiki infrastructure         medium      after Phase 1
+Phase 7   Org chart / specialist brains      high        after Phase 6
 ```
 
 Phases 1–2 are cleanup. Phases 3–5 are the graph. Phases 6–7 are evolution features.
+Phase 5b (upgrade pipeline) is designed but deferred until 6–7 are complete.
 Each phase leaves the system in a fully working state.

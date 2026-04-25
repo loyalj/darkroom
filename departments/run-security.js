@@ -24,6 +24,7 @@ const { createPhaseDisplay, agentStream, setRunDir } = require("../lib/display")
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
 const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, collectSourceFiles, extractCompact } = require("../lib/runner-utils");
 const { claudeCall } = require("../adapters/claude-cli");
+const { runReflector } = require("../lib/memory");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -33,6 +34,9 @@ const AGENTS_DIR = path.join(__dirname, "..", "agents");
 const RUNS_DIR = path.join(__dirname, "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md");
+
+// Memory context — loaded once at startup from memory-context.md written by graph executor.
+let memoryContext = null;
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -60,7 +64,8 @@ async function runStaticAnalyst(securityDir, artifactDir, runtimeSpec, caveman) 
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
     readFile(path.join(AGENTS_DIR, "security", "static-analyst.md")),
-    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "static-analysis.md")) : null
+    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "static-analysis.md")) : null,
+    memoryContext
   );
 
   const userMessage = [
@@ -111,7 +116,8 @@ async function runDynamicTester(securityDir, artifactDir, runtimeSpec, staticRep
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
     readFile(path.join(AGENTS_DIR, "security", "dynamic-tester.md")),
-    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "dynamic-testing.md")) : null
+    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "dynamic-testing.md")) : null,
+    memoryContext
   );
 
   const testerMessage = [
@@ -151,7 +157,8 @@ async function runVerdictAgent(securityDir, staticReport, dynamicReport, caveman
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "security", "verdict.md"))
+    readFile(path.join(AGENTS_DIR, "security", "verdict.md")),
+    memoryContext
   );
 
   const staticContext  = caveman ? (extractCompact(staticReport)  ?? staticReport)  : staticReport;
@@ -329,6 +336,9 @@ async function main() {
   console.log(`Project: ${factoryManifest.projectName}\n`);
   console.log(`Default stance: BLOCK. Explicit approval required to proceed.\n`);
 
+  const memCtxPath = path.join(runDir, "memory-context.md");
+  memoryContext = fileExists(memCtxPath) ? readFile(memCtxPath) : null;
+
   logEvent(runDir, { phase: "security", event: "start" });
 
   // Phase 1: Static analysis
@@ -349,6 +359,27 @@ async function main() {
 
   writeTokenTable(runDir);
   writeTimeTable(runDir);
+
+  const verdictReportPath = path.join(securityDir, "security-verdict-report.md");
+  const verdictText2 = fileExists(verdictReportPath)
+    ? readFile(verdictReportPath).match(/^#\s*Security Verdict:\s*(\S.*)/im)?.[1] ?? "unknown"
+    : "unknown";
+  const secManifest = fileExists(path.join(handoffDir, "factory-manifest.json"))
+    ? readJSON(path.join(handoffDir, "factory-manifest.json"))
+    : {};
+  const staticReportPath = path.join(securityDir, "static-analysis-report.md");
+  const dynamicReportPath = path.join(securityDir, "dynamic-test-report.md");
+
+  const reflCtxSec = [
+    `## Run ID\n\n${id}`,
+    `## Factory Manifest\n\n${JSON.stringify(secManifest, null, 2)}`,
+    `## Outcome\n\n${approved ? "Security approved." : "Security blocked — remediation requests written."}`,
+    `## Verdict\n\n${verdictText2}`,
+    fileExists(staticReportPath) ? `## Static Analysis Summary\n\n${readFile(staticReportPath).slice(0, 800)}` : null,
+    fileExists(dynamicReportPath) ? `## Dynamic Test Summary\n\n${readFile(dynamicReportPath).slice(0, 800)}` : null,
+  ].filter(Boolean).join("\n\n---\n\n");
+  await runReflector("security", runDir, reflCtxSec, (u) => logTokens(runDir, "Security", "Wiki Reflector", u));
+
   if (approved) {
     console.log(`\n${hr()}`);
     console.log("  Security Division complete. Approved.");

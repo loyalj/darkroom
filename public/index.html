@@ -19,6 +19,8 @@
       <div id="sidebar-nav">
         <div class="nav-item active" data-view="monitor">Run Viewer</div>
         <div class="nav-item" data-view="browser">Run Browser</div>
+        <div class="nav-item" data-view="profiles">Factory Profiles</div>
+        <div class="nav-item" data-view="memory">Factory Memory</div>
       </div>
     </nav>
 
@@ -106,6 +108,52 @@
         </div>
         <div id="run-list-body">
           <div style="color: var(--muted); padding: 20px;">Loading…</div>
+        </div>
+      </div>
+
+      <!-- ── Profiles ── -->
+      <div id="view-profiles" class="view">
+        <div class="panel-header">
+          <h2>Factory Profiles</h2>
+        </div>
+        <div id="profiles-body">
+          <div id="profiles-sidebar"></div>
+          <div id="profiles-main" class="mode-preview">
+            <div id="profiles-mode-bar">
+              <div id="profiles-mode-toggle">
+                <button class="profiles-mode-btn active" data-mode="preview">Preview</button>
+                <button class="profiles-mode-btn" data-mode="code">Code</button>
+              </div>
+              <span id="profiles-saved-badge" class="profiles-saved-badge"></span>
+              <button id="profiles-save-btn" class="profiles-save-btn" disabled>Save</button>
+            </div>
+            <div id="profiles-graph-pane">
+              <div class="empty-state">
+                <span>Select a profile</span>
+                <span class="hint">The node pipeline will appear here.</span>
+              </div>
+            </div>
+            <div id="profiles-editor-pane">
+              <div id="profiles-editor-error"></div>
+              <textarea id="profiles-editor" spellcheck="false" placeholder="Select a profile to edit…"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Factory Memory ── -->
+      <div id="view-memory" class="view">
+        <div class="panel-header">
+          <h2>Factory Memory</h2>
+          <button id="memory-refresh-btn" class="memory-refresh-btn">↺ Refresh</button>
+        </div>
+        <div id="memory-dept-row"></div>
+        <div id="memory-tab-row"></div>
+        <div id="memory-content">
+          <div class="empty-state">
+            <span>No memory yet</span>
+            <span class="hint">Craft knowledge grows here as the factory runs. Each completed run contributes insights.</span>
+          </div>
         </div>
       </div>
 

@@ -1,0 +1,31 @@
+{
+  "id": "rapid",
+  "name": "Rapid Prototype",
+  "nodes": [
+    {
+      "id": "design",
+      "runner": "departments/run-design.js",
+      "skipIf": "handoff/build-spec.md",
+      "memory": {
+        "readWiki": ["design", "build", "review", "security"],
+        "readRuns": [],
+        "write": "design"
+      }
+    },
+    {
+      "id": "build",
+      "runner": "departments/run-build.js",
+      "skipIf": "artifact/MANIFEST.txt",
+      "feedbackLoop": true,
+      "memory": {
+        "readWiki": ["design", "build", "review", "security"],
+        "readRuns": ["design", "build", "review", "security"],
+        "write": "build"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "design", "to": "build", "type": "forward" }
+  ],
+  "budgetCheckpoints": ["after:build"]
+}

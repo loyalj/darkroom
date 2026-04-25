@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * run-factory.js — Pipeline orchestrator for the Software Factory.
+ * run-factory.js — Pipeline entry point for the Software Factory.
  *
- * Runs the full division sequence and handles inter-division handoffs and
- * feedback loops automatically. Human decision points inside each division
- * remain unchanged in manual mode.
+ * Runs the brain interview (once, global), loads the pipeline profile,
+ * hands off to the graph executor, then writes the ledger entry.
  *
  * Modes:
  *   --mode manual  (default) Human handles all decisions inside each runner.
- *   --mode auto    Orchestrator acts as human-in-the-loop. (coming soon)
+ *   --mode auto    Orchestrator acts as human-in-the-loop.
  *
  * Usage:
  *   node run-factory.js                          # new run, full pipeline
@@ -19,18 +18,18 @@
 
 "use strict";
 
-const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { fileExists, logEvent, writeDecision, readFile, writeFile, buildSystemPrompt, clipForDisplay, runLockableInterview } = require("./lib/runner-utils");
-const { claudeRaw, claudeCall, claudeTurn } = require("./adapters/claude-cli");
+const { fileExists, logEvent, readFile, writeFile, buildSystemPrompt, runLockableInterview } = require("./lib/runner-utils");
+const { claudeCall } = require("./adapters/claude-cli");
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
 const { fileAdapter } = require("./io/adapters/file");
 const { A, createPhaseDisplay, setRunDir } = require("./lib/display");
+const { runGraph, readTokenUsage, readBudgetLimit } = require("./lib/graph");
 
-// Module-level io and mode — set once in main(), shared by escalate(), checkBudget(), etc.
+// Module-level io and mode — set once in main(), shared by leadership functions.
 let io   = null;
 let mode = "manual";
 
@@ -39,11 +38,10 @@ function createIO(runDir) {
   return createInteraction(cliAdapter());
 }
 
-const RUNS_DIR    = path.join(__dirname, "runs");
-const BRAIN_PATH  = path.join(__dirname, "org/ceo/brain.md");
-const AGENTS_DIR  = path.join(__dirname, "agents");
-const DIVISIONS   = ["Design", "Build", "Review", "Security"];
-const MAX_LOOPS   = 3;
+const RUNS_DIR   = path.join(__dirname, "runs");
+const BRAIN_PATH = path.join(__dirname, "org/ceo/brain.md");
+const AGENTS_DIR = path.join(__dirname, "agents");
+const DIVISIONS  = ["design", "build", "review", "security"];
 
 // ---------------------------------------------------------------------------
 // Arg parsing
@@ -59,416 +57,24 @@ function parseArgs() {
   const caveman   = args.includes("--caveman");
   const tag       = get("--tag") ?? null;
   const io        = get("--io") ?? null;
+  const profile   = get("--profile") ?? "full";
 
-  // auto mode is live — signals handled for implemented decision points
-  if (stopAfter && !DIVISIONS.map((d) => d.toLowerCase()).includes(stopAfter)) {
-    console.error(`--stop-after must be one of: ${DIVISIONS.map((d) => d.toLowerCase()).join(", ")}`);
+  if (stopAfter && !DIVISIONS.includes(stopAfter)) {
+    console.error(`--stop-after must be one of: ${DIVISIONS.join(", ")}`);
     process.exit(1);
   }
 
-  return { mode, stopAfter, runId, caveman, tag, io };
-}
-
-// ---------------------------------------------------------------------------
-// Division runner
-// ---------------------------------------------------------------------------
-
-function runDivision(script, extraArgs = []) {
-  const result = spawnSync("node", [script, ...extraArgs], {
-    stdio: "inherit",
-    cwd: __dirname,
-  });
-  if (result.error) throw result.error;
-  if (result.signal) {
-    // Ctrl+C or external kill — exit cleanly with conventional code
-    process.exit(130);
-  }
-  return result.status ?? 1;
-}
-
-// Auto mode: spawn with piped stdin/stdout, passthrough to terminal, intercept signals.
-function runDivisionAuto(script, extraArgs = [], onSignal, runDir = null) {
-  const { spawn } = require("child_process");
-  return new Promise((resolve, reject) => {
-    const proc = spawn("node", [script, ...extraArgs], {
-      stdio: ["pipe", "pipe", "inherit"],
-      cwd: __dirname,
-      env: { ...process.env, FACTORY_AUTO: "1" },
-    });
-
-    let buf = "";
-    let signalInFlight = false;
-
-    proc.stdout.on("data", (chunk) => {
-      process.stdout.write(chunk); // passthrough to terminal
-      buf += chunk.toString();
-      const lines = buf.split("\n");
-      buf = lines.pop(); // keep trailing incomplete line
-
-      for (const line of lines) {
-        const match = line.match(/^FACTORY_SIGNAL:(.+)$/);
-        if (match && !signalInFlight) {
-          signalInFlight = true;
-          let signal;
-          try { signal = JSON.parse(match[1]); } catch { signal = { raw: match[1] }; }
-          Promise.resolve(onSignal(signal))
-            .then((response) => {
-              if (process.env.DARK_ROOM_IO === "file" && runDir) {
-                // File adapter reads input-response.json, not stdin
-                fs.writeFileSync(path.join(runDir, "input-response.json"), JSON.stringify({ response }));
-              } else {
-                proc.stdin.write(response + "\n");
-              }
-              signalInFlight = false;
-            })
-            .catch(reject);
-        }
-      }
-    });
-
-    proc.on("close", (code) => {
-      if (code === 130) process.exit(130);
-      resolve(code ?? 1);
-    });
-
-    proc.on("error", reject);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Auto decisions
-// ---------------------------------------------------------------------------
-
-async function makeCopyReviewDecision(runDir) {
-  const copyReviewPath = path.join(runDir, "build", "copy-review.txt");
-  const copyContent = readFile(copyReviewPath);
-  const brainContent = readFile(BRAIN_PATH);
-  const runBrainPath = path.join(runDir, "run-brain.md");
-  const runBrainContent = fileExists(runBrainPath) ? readFile(runBrainPath) : null;
-
-  const systemPrompt = buildSystemPrompt(
-    `You are the orchestrator for a Software Factory. You make autonomous decisions at control points using the operator's decision-making profile (brain.md).
-
-Respond with valid JSON only:
-- To approve:          {"decision":"approve","confidence":"high"|"medium"|"low","reasoning":"..."}
-- To request revision: {"decision":"reject","confidence":"high"|"medium"|"low","feedback":"...specific feedback for the copywriter...","reasoning":"..."}
-- To escalate to human (when genuinely uncertain): {"decision":"escalate","reasoning":"...why you cannot decide confidently..."}
-
-Use "escalate" only when the brain does not give you enough signal to decide — for example, the copy style is so different from anything described that you cannot tell if it fits the voice.
-Base your decision on the operator's copy voice preferences and quality bar from the brain.`,
-    `## Global Brain\n\n${brainContent}`,
-    runBrainContent ? `## Run Brain\n\n${runBrainContent}` : null
-  );
-
-  const result = claudeCall(
-    systemPrompt,
-    `## Decision Point: Copy Review\n\nReview the following copy and decide whether to approve it or request revision.\n\n${copyContent}`,
-    (u) => logTokens("Copy Review Decision", u)
-  );
-
-  // Escalate if explicitly requested or confidence is low
-  if (result.decision === "escalate" || result.confidence === "low") {
-    writeDecision(runDir, {
-      decisionPoint: "copy-review",
-      evidence: copyContent.slice(0, 1000),
-      brainContext: `voice: ${brainContent.match(/## Copy Voice\n([\s\S]*?)(?=\n##|$)/)?.[1]?.trim().slice(0, 200) ?? "(see brain.md)"}`,
-      decision: "escalate",
-      reasoning: result.reasoning ?? "",
-      humanOverride: false,
-    });
-
-    const answer = await escalate(runDir, "Low confidence on copy review", {
-      at: "Build Phase 4 — Copy Review",
-      detail: result.reasoning ?? "The orchestrator could not determine whether this copy matches your voice.",
-      options: ["approve", "reject: <feedback>", "abort"],
-    });
-
-    if (/^abort/i.test(answer)) process.exit(1);
-
-    const humanApproved = /^approve/i.test(answer);
-    const humanFeedback = answer.replace(/^reject:\s*/i, "").trim();
-
-    writeDecision(runDir, {
-      decisionPoint: "copy-review",
-      evidence: copyContent.slice(0, 200),
-      brainContext: "(escalated)",
-      decision: humanApproved ? "approve" : "reject",
-      reasoning: "Human override after escalation.",
-      humanOverride: true,
-    });
-
-    return humanApproved ? "yes" : (humanFeedback || "Please revise the copy.");
+  const profilePath = path.join(__dirname, "profiles", `${profile}.json`);
+  if (!fs.existsSync(profilePath)) {
+    console.error(`Unknown profile: ${profile}  (no profiles/${profile}.json found)`);
+    process.exit(1);
   }
 
-  const approved = result.decision === "approve";
-
-  writeDecision(runDir, {
-    decisionPoint: "copy-review",
-    evidence: copyContent.slice(0, 1000),
-    brainContext: `voice: ${brainContent.match(/## Copy Voice\n([\s\S]*?)(?=\n##|$)/)?.[1]?.trim().slice(0, 200) ?? "(see brain.md)"}`,
-    decision: result.decision,
-    reasoning: result.reasoning ?? "",
-    humanOverride: false,
-  });
-
-  const confidenceColor = result.confidence === "high" ? A.green : result.confidence === "medium" ? A.yellow : A.red;
-  console.log(`\n  ${A.cyan("●")}  Auto decision: copy-review → ${approved ? A.green("approve") : A.yellow("reject")}  ${A.dim("(" + confidenceColor(result.confidence ?? "?") + " confidence)")}`);
-  if (result.reasoning) {
-    console.log(`  ${A.dim("↳ " + result.reasoning.split(/[.\n]/)[0].trim())}\n`);
-  }
-
-  return approved ? "yes" : (result.feedback ?? "Please revise the copy.");
-}
-
-async function handleBuildSignal(runDir, signal) {
-  if (signal.point === "copy-review") return makeCopyReviewDecision(runDir);
-  return handleUnknownSignal(runDir, signal);
+  return { mode, stopAfter, runId, caveman, tag, io, profile };
 }
 
 // ---------------------------------------------------------------------------
-// Security decision handlers
-// ---------------------------------------------------------------------------
-
-async function makeSecurityFindingDecision(runDir, signal) {
-  const finding = signal.finding ?? "(finding not available)";
-  const brainContent = readFile(BRAIN_PATH);
-  const runBrainPath = path.join(runDir, "run-brain.md");
-  const runBrainContent = fileExists(runBrainPath) ? readFile(runBrainPath) : null;
-
-  const systemPrompt = buildSystemPrompt(
-    `You are the orchestrator for a Software Factory. Decide whether to accept or fix a high security finding.
-
-Respond with valid JSON only:
-- To accept (acknowledge and ship with known risk): {"decision":"accept","confidence":"high"|"medium"|"low","reasoning":"..."}
-- To fix (send back for remediation):               {"decision":"fix","confidence":"high"|"medium"|"low","reasoning":"..."}
-- To escalate: {"decision":"escalate","reasoning":"..."}
-
-Base your decision on the operator's security posture — their stated thresholds for what can be accepted vs. must be fixed.`,
-    `## Global Brain\n\n${brainContent}`,
-    runBrainContent ? `## Run Brain\n\n${runBrainContent}` : null
-  );
-
-  const result = claudeCall(
-    systemPrompt,
-    `## Decision Point: High Security Finding\n\n${finding}`,
-    (u) => logTokens("Security Finding Decision", u)
-  );
-
-  if (result.decision === "escalate" || result.confidence === "low") {
-    writeDecision(runDir, { decisionPoint: "security-finding", evidence: finding.slice(0, 500), brainContext: "(see brain.md)", decision: "escalate", reasoning: result.reasoning ?? "", humanOverride: false });
-    const answer = await escalate(runDir, "Low confidence on security finding", {
-      at: "Security Phase 4 — High Finding Review",
-      detail: `Finding:\n${finding.slice(0, 400)}\n\nReason: ${result.reasoning ?? "Unable to determine whether to accept or fix."}`,
-      options: ["accept", "fix", "abort"],
-    });
-    if (/^abort/i.test(answer)) process.exit(1);
-    const humanDecision = /^accept/i.test(answer) ? "accept" : "fix";
-    writeDecision(runDir, { decisionPoint: "security-finding", evidence: finding.slice(0, 200), brainContext: "(escalated)", decision: humanDecision, reasoning: "Human override after escalation.", humanOverride: true });
-    return humanDecision;
-  }
-
-  writeDecision(runDir, { decisionPoint: "security-finding", evidence: finding.slice(0, 500), brainContext: `security: ${brainContent.match(/## Security Posture\n([\s\S]*?)(?=\n##|$)/)?.[1]?.trim().slice(0, 200) ?? "(see brain.md)"}`, decision: result.decision, reasoning: result.reasoning ?? "", humanOverride: false });
-  const decisionColor = result.decision === "accept" ? A.green : A.yellow;
-  console.log(`\n  ${A.cyan("●")}  Auto decision: security-finding → ${decisionColor(result.decision)}`);
-  if (result.reasoning) console.log(`  ${A.dim("↳ " + result.reasoning.split(/[.\n]/)[0].trim())}\n`);
-
-  return result.decision === "accept" ? "accept" : "fix";
-}
-
-async function makeSecurityFinalApprovalDecision(runDir) {
-  // All findings have been handled — default approve unless low confidence
-  const brainContent = readFile(BRAIN_PATH);
-  const runBrainPath = path.join(runDir, "run-brain.md");
-  const runBrainContent = fileExists(runBrainPath) ? readFile(runBrainPath) : null;
-
-  const systemPrompt = buildSystemPrompt(
-    `You are the orchestrator for a Software Factory. All security findings have been reviewed and either accepted or sent for remediation. Decide whether to give final approval.
-
-Respond with valid JSON only:
-- {"decision":"approve","confidence":"high"|"medium"|"low","reasoning":"..."}
-- {"decision":"escalate","reasoning":"..."}
-
-Only escalate if there is a specific unresolved concern. Approving here means the security review is complete.`,
-    `## Global Brain\n\n${brainContent}`,
-    runBrainContent ? `## Run Brain\n\n${runBrainContent}` : null
-  );
-
-  const result = claudeCall(
-    systemPrompt,
-    "All findings have been reviewed. Should the security review be approved?",
-    (u) => logTokens("Security Final Approval Decision", u)
-  );
-
-  if (result.decision === "escalate" || result.confidence === "low") {
-    writeDecision(runDir, { decisionPoint: "security-final-approval", evidence: "(post-finding review)", brainContext: "(see brain.md)", decision: "escalate", reasoning: result.reasoning ?? "", humanOverride: false });
-    const answer = await escalate(runDir, "Low confidence on security final approval", {
-      at: "Security Phase 4 — Final Approval",
-      detail: result.reasoning ?? "Uncertain whether all findings have been adequately handled.",
-      options: ["yes (approve)", "no (reject)", "abort"],
-    });
-    if (/^abort/i.test(answer)) process.exit(1);
-    const humanDecision = /^yes/i.test(answer) ? "yes" : "no";
-    writeDecision(runDir, { decisionPoint: "security-final-approval", evidence: "(post-finding review)", brainContext: "(escalated)", decision: humanDecision === "yes" ? "approve" : "reject", reasoning: "Human override after escalation.", humanOverride: true });
-    return humanDecision;
-  }
-
-  writeDecision(runDir, { decisionPoint: "security-final-approval", evidence: "(post-finding review)", brainContext: "(findings resolved)", decision: "approve", reasoning: result.reasoning ?? "", humanOverride: false });
-  console.log(`\n  ${A.cyan("●")}  Auto decision: security-final-approval → ${A.green("approve")}\n`);
-  return "yes";
-}
-
-async function handleSecuritySignal(runDir, signal) {
-  if (signal.point === "security-block")         return ""; // acknowledge BLOCK, remediations will be written
-  if (signal.point === "security-finding")       return makeSecurityFindingDecision(runDir, signal);
-  if (signal.point === "security-final-approval") return makeSecurityFinalApprovalDecision(runDir);
-  return handleUnknownSignal(runDir, signal);
-}
-
-// ---------------------------------------------------------------------------
-// Review decision handlers
-// ---------------------------------------------------------------------------
-
-async function makeReviewVerdictNoShipDecision(runDir) {
-  const verdictPath = path.join(runDir, "review", "verdict-report.md");
-  const verdictContent = fileExists(verdictPath) ? readFile(verdictPath) : "(verdict not available)";
-  const brainContent = readFile(BRAIN_PATH);
-  const runBrainPath = path.join(runDir, "run-brain.md");
-  const runBrainContent = fileExists(runBrainPath) ? readFile(runBrainPath) : null;
-
-  const systemPrompt = buildSystemPrompt(
-    `You are the orchestrator for a Software Factory. The review verdict is NO-SHIP. Decide whether to accept the verdict (route back to build) or override it (ship anyway).
-
-Respond with valid JSON only:
-- To accept (route back to build): {"decision":"accept","confidence":"high"|"medium"|"low","reasoning":"..."}
-- To override and ship: {"decision":"override","reason":"...logged override reason...","confidence":"high"|"medium"|"low","reasoning":"..."}
-- To escalate: {"decision":"escalate","reasoning":"..."}
-
-Overriding should be rare and only when the failures are minor, clearly out of scope, or the operator's quality bar explicitly allows it. If in doubt, accept the verdict.`,
-    `## Global Brain\n\n${brainContent}`,
-    runBrainContent ? `## Run Brain\n\n${runBrainContent}` : null
-  );
-
-  const result = claudeCall(
-    systemPrompt,
-    `## Decision Point: Review Verdict — NO-SHIP\n\n${verdictContent}`,
-    (u) => logTokens("Review Verdict Decision", u)
-  );
-
-  if (result.decision === "escalate" || result.confidence === "low") {
-    writeDecision(runDir, { decisionPoint: "review-verdict-no-ship", evidence: verdictContent.slice(0, 500), brainContext: "(see brain.md)", decision: "escalate", reasoning: result.reasoning ?? "", humanOverride: false });
-    const answer = await escalate(runDir, "Low confidence on NO-SHIP verdict", {
-      at: "Review Phase 6 — Verdict",
-      detail: result.reasoning ?? "Unable to determine whether to accept the no-ship verdict or override it.",
-      options: ["accept (route to build)", "override: <reason>", "abort"],
-    });
-    if (/^abort/i.test(answer)) process.exit(1);
-    const humanAccept = /^accept/i.test(answer);
-    const overrideReason = answer.replace(/^override[\s:]+/i, "").trim();
-    writeDecision(runDir, { decisionPoint: "review-verdict-no-ship", evidence: verdictContent.slice(0, 200), brainContext: "(escalated)", decision: humanAccept ? "accept" : "override", reasoning: "Human override after escalation.", humanOverride: true });
-    return humanAccept ? "accept" : `override: ${overrideReason || "operator decision"}`;
-  }
-
-  writeDecision(runDir, { decisionPoint: "review-verdict-no-ship", evidence: verdictContent.slice(0, 500), brainContext: `quality: ${brainContent.match(/## Quality Bar\n([\s\S]*?)(?=\n##|$)/)?.[1]?.trim().slice(0, 200) ?? "(see brain.md)"}`, decision: result.decision, reasoning: result.reasoning ?? "", humanOverride: false });
-  const decisionColor = result.decision === "override" ? A.yellow : A.green;
-  console.log(`\n  ${A.cyan("●")}  Auto decision: review-verdict-no-ship → ${decisionColor(result.decision)}`);
-  if (result.reasoning) console.log(`  ${A.dim("↳ " + result.reasoning.split(/[.\n]/)[0].trim())}\n`);
-
-  if (result.decision === "override") return `override: ${result.reason ?? "orchestrator decision"}`;
-  return "accept";
-}
-
-async function makeReviewVerdictShipDecision(runDir) {
-  // Verdict is SHIP — approve unless confidence is low
-  const brainContent = readFile(BRAIN_PATH);
-  const runBrainPath = path.join(runDir, "run-brain.md");
-  const runBrainContent = fileExists(runBrainPath) ? readFile(runBrainPath) : null;
-  const verdictPath = path.join(runDir, "review", "verdict-report.md");
-  const verdictContent = fileExists(verdictPath) ? readFile(verdictPath) : "(verdict not available)";
-
-  const systemPrompt = buildSystemPrompt(
-    `You are the orchestrator for a Software Factory. The review verdict is SHIP. Decide whether to approve and ship.
-
-Respond with valid JSON only:
-- {"decision":"approve","confidence":"high"|"medium"|"low","reasoning":"..."}
-- {"decision":"escalate","reasoning":"..."}
-
-Only escalate if there is a specific concern. A SHIP verdict from the review division should almost always be approved.`,
-    `## Global Brain\n\n${brainContent}`,
-    runBrainContent ? `## Run Brain\n\n${runBrainContent}` : null
-  );
-
-  const result = claudeCall(
-    systemPrompt,
-    `## Decision Point: Review Verdict — SHIP\n\n${verdictContent}`,
-    (u) => logTokens("Review Verdict Ship Decision", u)
-  );
-
-  if (result.decision === "escalate" || result.confidence === "low") {
-    writeDecision(runDir, { decisionPoint: "review-verdict-ship", evidence: verdictContent.slice(0, 500), brainContext: "(see brain.md)", decision: "escalate", reasoning: result.reasoning ?? "", humanOverride: false });
-    const answer = await escalate(runDir, "Low confidence on SHIP verdict approval", {
-      at: "Review Phase 6 — Verdict",
-      detail: result.reasoning ?? "Uncertain whether to approve the ship verdict.",
-      options: ["yes (approve and ship)", "no (reject)", "abort"],
-    });
-    if (/^abort/i.test(answer)) process.exit(1);
-    const humanDecision = /^yes/i.test(answer) ? "yes" : "no";
-    writeDecision(runDir, { decisionPoint: "review-verdict-ship", evidence: verdictContent.slice(0, 200), brainContext: "(escalated)", decision: humanDecision === "yes" ? "approve" : "reject", reasoning: "Human override after escalation.", humanOverride: true });
-    return humanDecision;
-  }
-
-  writeDecision(runDir, { decisionPoint: "review-verdict-ship", evidence: verdictContent.slice(0, 200), brainContext: "(ship verdict)", decision: "approve", reasoning: result.reasoning ?? "", humanOverride: false });
-  console.log(`\n  ${A.cyan("●")}  Auto decision: review-verdict-ship → ${A.green("approve")}\n`);
-  return "yes";
-}
-
-async function handleReviewSignal(runDir, signal) {
-  if (signal.point === "review-verdict-no-ship") return makeReviewVerdictNoShipDecision(runDir);
-  if (signal.point === "review-verdict-ship")    return makeReviewVerdictShipDecision(runDir);
-  return handleUnknownSignal(runDir, signal);
-}
-
-// ---------------------------------------------------------------------------
-// Unknown signal fallback
-// ---------------------------------------------------------------------------
-
-async function handleUnknownSignal(runDir, signal) {
-  console.log(`\n  ${A.yellow("⚠")}  Unknown signal: ${signal.point ?? signal.raw}`);
-  await escalate(runDir, `Unhandled signal: ${signal.point ?? signal.raw}`, {
-    at: "Division runner",
-    detail: "The factory received a decision signal it does not yet handle in auto mode.\nThe runner is waiting for input.",
-    options: ["continue (pass empty response)", "abort"],
-  });
-  return "";
-}
-
-// ---------------------------------------------------------------------------
-// Outcome detection
-// ---------------------------------------------------------------------------
-
-function readLog(runDir) {
-  const p = path.join(runDir, "log.jsonl");
-  if (!fileExists(p)) return [];
-  return fs.readFileSync(p, "utf8")
-    .trim().split("\n").filter(Boolean)
-    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-    .filter(Boolean);
-}
-
-function lastEvent(runDir, phase, event) {
-  return readLog(runDir).filter((e) => e.phase === phase && e.event === event).pop() ?? null;
-}
-
-function hasPendingReviewFailures(runDir) {
-  const dir = path.join(runDir, "failure-reports");
-  return fileExists(dir) && fs.readdirSync(dir).some((f) => f.endsWith(".json"));
-}
-
-function hasPendingSecurityRemediations(runDir) {
-  return fileExists(path.join(runDir, "security-remediations", "remediation-requests.md"));
-}
-
-// ---------------------------------------------------------------------------
-// Brain interview
+// Leadership token logger
 // ---------------------------------------------------------------------------
 
 function logTokens(label, usage) {
@@ -476,14 +82,17 @@ function logTokens(label, usage) {
     ts: new Date().toISOString(),
     phase: "Leadership",
     label,
-    input:      usage?.input_tokens      ?? 0,
-    output:     usage?.output_tokens     ?? 0,
-    cacheRead:  usage?.cache_read_input_tokens  ?? 0,
-    cacheWrite: usage?.cache_creation_input_tokens ?? 0,
+    input:      usage?.input_tokens                  ?? 0,
+    output:     usage?.output_tokens                 ?? 0,
+    cacheRead:  usage?.cache_read_input_tokens       ?? 0,
+    cacheWrite: usage?.cache_creation_input_tokens   ?? 0,
   });
-  const logPath = path.join(__dirname, "org/ceo/brain-token-usage.jsonl");
-  fs.appendFileSync(logPath, entry + "\n");
+  fs.appendFileSync(path.join(__dirname, "org/ceo/brain-token-usage.jsonl"), entry + "\n");
 }
+
+// ---------------------------------------------------------------------------
+// Brain interview (global, one-time)
+// ---------------------------------------------------------------------------
 
 async function runBrainInterview(runDir) {
   if (fileExists(BRAIN_PATH)) {
@@ -493,8 +102,6 @@ async function runBrainInterview(runDir) {
 
   const transcriptPath = path.join(__dirname, "org/ceo/brain-transcript.md");
 
-  // Recovery: transcript exists from a previous session but brain.md was never written.
-  // Skip the interview entirely and re-run only the lock step.
   if (fileExists(transcriptPath)) {
     console.log(`  ${A.yellow("↻")}  Brain transcript found — recovering from previous session\n`);
     const display = createPhaseDisplay("Leadership", "Brain Interview", "", "recovering...");
@@ -530,7 +137,7 @@ async function runBrainInterview(runDir) {
     readFile(path.join(AGENTS_DIR, "leadership", "brain-interviewer.md"))
   );
 
-  const io = createIO(runDir);
+  const ioLocal = createIO(runDir);
 
   const display = createPhaseDisplay("Leadership", "Brain Interview", "", "thinking...");
   display.log(`\n  ${A.dim("The factory is building your decision-making profile.")}`);
@@ -551,7 +158,7 @@ async function runBrainInterview(runDir) {
   }
 
   const lockedOutput = await runLockableInterview({
-    systemPrompt, transcriptPath, display, io,
+    systemPrompt, transcriptPath, display, io: ioLocal,
     agentName: "Brain Interviewer",
     lockSignalRe: /ready to lock the brain/i,
     lockConfirmPrompt: "Lock the brain?",
@@ -570,16 +177,15 @@ async function runBrainInterview(runDir) {
     writeFile(path.join(__dirname, "org/ceo/brain-config.json"), JSON.stringify(lockedOutput.config, null, 2));
   }
   display.finish("brain.md written");
-  io.close();
-
+  ioLocal.close();
   console.log(`\n  ${A.dim("Brain saved to brain.md — this will be used for all future auto decisions.")}\n`);
 }
 
 // ---------------------------------------------------------------------------
-// Run brain interview
+// Run brain interview (per-run, after Design)
 // ---------------------------------------------------------------------------
 
-async function runRunBrainInterview(runDir, mode = "manual") {
+async function runRunBrainInterview(runDir) {
   const runBrainPath = path.join(runDir, "run-brain.md");
   if (fileExists(runBrainPath)) {
     console.log(`  ${A.green("✓")}  Run brain found — skipping interview\n`);
@@ -601,7 +207,6 @@ async function runRunBrainInterview(runDir, mode = "manual") {
       : null
   );
 
-  // Auto mode: generate run brain directly from specs + global brain — no interview needed.
   if (mode === "auto") {
     const display = createPhaseDisplay("Leadership", "Run Brain", "", "generating...");
     const result = claudeCall(
@@ -628,7 +233,7 @@ async function runRunBrainInterview(runDir, mode = "manual") {
   const transcriptPath = path.join(runDir, "run-brain-transcript.md");
   writeFile(transcriptPath, "# Run Brain Interview Transcript\n");
 
-  const io = createIO(runDir);
+  const ioLocal = createIO(runDir);
 
   const display = createPhaseDisplay("Leadership", "Run Brain", "", "reading specs...");
   display.log(`\n  ${A.dim("Calibrating for this specific project.")}`);
@@ -658,7 +263,7 @@ async function runRunBrainInterview(runDir, mode = "manual") {
   }
 
   const lockedOutput = await runLockableInterview({
-    systemPrompt, transcriptPath, display, io,
+    systemPrompt, transcriptPath, display, io: ioLocal,
     agentName: "Run Brain",
     lockSignalRe: /ready to lock the run brain/i,
     lockConfirmPrompt: "Lock the run brain?",
@@ -677,126 +282,13 @@ async function runRunBrainInterview(runDir, mode = "manual") {
     writeFile(path.join(runDir, "run-config.json"), JSON.stringify(lockedOutput.config, null, 2));
   }
   display.finish("run-brain.md written");
-  io.close();
-
+  ioLocal.close();
   console.log(`\n  ${A.dim("Run brain saved — applies to this run only.")}\n`);
 }
 
 // ---------------------------------------------------------------------------
-// Accountant
+// Token ledger
 // ---------------------------------------------------------------------------
-
-function readTokenUsage(runDir) {
-  const logPath = path.join(runDir, "token-usage.jsonl");
-  if (!fileExists(logPath)) return { byPhase: {}, totOut: 0 };
-
-  const entries = fs.readFileSync(logPath, "utf8")
-    .trim().split("\n").filter(Boolean)
-    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-    .filter(Boolean);
-
-  const byPhase = {};
-  let totIn = 0, totOut = 0, totCache = 0;
-  for (const e of entries) {
-    if (!byPhase[e.phase]) byPhase[e.phase] = { input: 0, output: 0, cacheRead: 0 };
-    byPhase[e.phase].input     += e.input     ?? 0;
-    byPhase[e.phase].output    += e.output    ?? 0;
-    byPhase[e.phase].cacheRead += e.cacheRead ?? 0;
-    totIn    += e.input     ?? 0;
-    totOut   += e.output    ?? 0;
-    totCache += e.cacheRead ?? 0;
-  }
-  return { byPhase, totIn, totOut, totCache };
-}
-
-function readBudgetLimit(runDir) {
-  // Run config takes priority, then global brain config, then no limit.
-  const runCfgPath = path.join(runDir, "run-config.json");
-  if (fileExists(runCfgPath)) {
-    const cfg = JSON.parse(fs.readFileSync(runCfgPath, "utf8"));
-    if (cfg.tokenLimit != null && cfg.tokenLimit !== 0) return { limit: cfg.tokenLimit, source: "run brain" };
-    if (cfg.tokenLimit === 0) return { limit: null, source: "run brain (no limit)" };
-  }
-  const brainCfgPath = path.join(__dirname, "org/ceo/brain-config.json");
-  if (fileExists(brainCfgPath)) {
-    const cfg = JSON.parse(fs.readFileSync(brainCfgPath, "utf8"));
-    if (cfg.tokenLimitPerRun != null) return { limit: cfg.tokenLimitPerRun, source: "global brain" };
-  }
-  return { limit: null, source: "none" };
-}
-
-// Runs build and loops on exit code 43 (verification needs human feedback).
-// Human input collected here so readline is never corrupted by agentStream.
-async function runBuildWithFeedback(runId, runDir, mode) {
-  const buildDir = path.join(runDir, "build");
-  const feedbackNeededPath = path.join(buildDir, "verification-feedback-needed.json");
-  const feedbackPath = path.join(buildDir, "verification-feedback.json");
-
-  while (true) {
-    const exitCode = mode === "auto"
-      ? await runDivisionAuto("departments/run-build.js", ["--run-id", runId], (sig) => handleBuildSignal(runDir, sig), runDir)
-      : runDivision("departments/run-build.js", ["--run-id", runId]);
-
-    // Clear any frozen phase-display header left on screen by the child process.
-    process.stdout.write(A.resetScroll + A.moveTo(1, 1) + A.clearToEnd);
-
-    if (exitCode !== 43) return exitCode;
-
-    const neededData = JSON.parse(readFile(feedbackNeededPath));
-    fs.unlinkSync(feedbackNeededPath);
-
-    console.log(`\n${"─".repeat(60)}`);
-    console.log("  Verification failed — describe what needs to be fixed.");
-    console.log(`${"─".repeat(60)}\n`);
-
-    if (neededData.failures) {
-      for (const f of neededData.failures) {
-        console.log(`  [FAIL] Criterion ${f.criterionId}: ${f.description}`);
-        if (f.expected) console.log(`         Expected: ${f.expected}`);
-        if (f.observed) console.log(`         Observed: ${f.observed}\n`);
-      }
-    }
-
-    const feedback = await io.turn("Your feedback: ");
-    if (!feedback.trim()) {
-      console.log("No feedback provided. Aborting.");
-      process.exit(1);
-    }
-
-    writeFile(feedbackPath, JSON.stringify({ feedback }));
-  }
-}
-
-async function checkBudget(runDir, checkpoint) {
-  const { limit, source } = readBudgetLimit(runDir);
-  if (!limit) return; // no limit set
-
-  const { totOut } = readTokenUsage(runDir);
-  if (totOut <= limit) return; // within budget
-
-  const n = (v) => v.toLocaleString("en-US");
-  const pct = Math.round((totOut / limit) * 100);
-
-  console.log(`\n${"─".repeat(60)}`);
-  console.log(`  ${A.yellow("⚠")}  ${A.bold("Budget exceeded")}  ·  ${checkpoint}`);
-  console.log(`  Spent:  ${A.yellow(n(totOut))} output tokens`);
-  console.log(`  Limit:  ${n(limit)} output tokens  ${A.dim("(" + source + ")")}`);
-  console.log(`  Usage:  ${A.yellow(pct + "%")}`);
-  console.log(`${"─".repeat(60)}\n`);
-
-  if (mode === "auto" && process.env.DARK_ROOM_IO !== "file") {
-    console.log(`  ${A.dim("Auto mode — continuing past budget limit.")}\n`);
-    return;
-  }
-
-  const answer = await io.turn("Continue anyway? (yes / abort): ", { options: ["yes", "abort"] });
-
-  if (!/^(yes|y)/i.test(answer.trim())) {
-    console.log(`\n  ${A.red("✗")}  Aborted by budget limit.\n`);
-    process.exit(1);
-  }
-  console.log(`  ${A.dim("Continuing past budget limit — noted.")}\n`);
-}
 
 function writeLedgerEntry(runDir) {
   const ledgerDir  = path.join(__dirname, "accounts");
@@ -830,92 +322,11 @@ function writeLedgerEntry(runDir) {
 }
 
 // ---------------------------------------------------------------------------
-// Escalation handler
-// ---------------------------------------------------------------------------
-
-// Single extension point for all human interventions in auto mode.
-// Future: add email/Slack hooks here before the CLI prompt.
-async function escalate(runDir, reason, context = {}) {
-  const options = context.options ?? ["continue", "abort"];
-
-  console.log(`\n${"═".repeat(60)}`);
-  console.log(`  ${A.yellow("⚑")}  ${A.bold("Escalation")}  ·  ${reason}`);
-  console.log(`${"═".repeat(60)}`);
-  if (context.at)     console.log(`  ${A.dim("At:")}  ${context.at}`);
-  if (context.detail) {
-    console.log();
-    for (const line of context.detail.trim().split("\n")) {
-      console.log(`  ${A.dim(line)}`);
-    }
-  }
-  console.log(`\n  ${A.dim("Options:")}  ${options.join("  /  ")}`);
-  console.log(`${"═".repeat(60)}\n`);
-
-  const raw = await io.turn("  Your choice: ", { options });
-
-  const answer = raw.trim().toLowerCase();
-  logEvent(runDir, { phase: "factory", event: "escalation", reason, answer, context: context.at ?? "" });
-  return answer;
-}
-
-function readLoopLimit(runDir) {
-  const runCfgPath = path.join(runDir, "run-config.json");
-  if (fileExists(runCfgPath)) {
-    try {
-      const cfg = JSON.parse(fs.readFileSync(runCfgPath, "utf8"));
-      if (cfg.maxLoopsBeforeEscalate != null) return cfg.maxLoopsBeforeEscalate;
-    } catch {}
-  }
-  const brainCfgPath = path.join(__dirname, "org/ceo/brain-config.json");
-  if (fileExists(brainCfgPath)) {
-    try {
-      const cfg = JSON.parse(fs.readFileSync(brainCfgPath, "utf8"));
-      if (cfg.maxLoopsBeforeEscalate != null) return cfg.maxLoopsBeforeEscalate;
-    } catch {}
-  }
-  return MAX_LOOPS; // fall back to hard ceiling
-}
-
-// ---------------------------------------------------------------------------
-// Banner
-// ---------------------------------------------------------------------------
-
-function banner(runDir, current, note = "") {
-  let project = "";
-  try {
-    project = JSON.parse(fs.readFileSync(
-      path.join(runDir, "handoff", "factory-manifest.json"), "utf8"
-    )).projectName ?? "";
-  } catch {}
-
-  const currentIdx = DIVISIONS.indexOf(current);
-  const pipeline = DIVISIONS.map((d, i) => {
-    if (i < currentIdx) return A.green(d);
-    if (i === currentIdx) return A.bold(A.cyan(d));
-    return A.dim(d);
-  }).join(A.dim("  →  "));
-
-  const id = path.basename(runDir);
-  console.log(`\n${"─".repeat(60)}`);
-  console.log(`  ${A.bold("Software Factory")}${project ? `  ·  ${project}` : ""}  ·  ${A.cyan(id)}`);
-  console.log(`  ${pipeline}`);
-  if (note) console.log(`  ${A.yellow(note)}`);
-  console.log(`${"─".repeat(60)}\n`);
-}
-
-function abort(runDir, division, reason, loop) {
-  const extra = loop > 1 ? ` (loop ${loop})` : "";
-  console.error(`\n${A.red("✗")}  ${division} division failed${extra}. ${reason}`);
-  logEvent(runDir, { phase: "factory", event: "aborted", division: division.toLowerCase(), reason, loop });
-  process.exit(1);
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const { mode: parsedMode, stopAfter, runId, caveman, tag, io: ioFlag } = parseArgs();
+  const { mode: parsedMode, stopAfter, runId, caveman, tag, io: ioFlag, profile: profileName } = parseArgs();
   mode = parsedMode;
   if (ioFlag === "file") process.env.DARK_ROOM_IO = "file";
   const runDir = path.join(RUNS_DIR, runId);
@@ -926,172 +337,48 @@ async function main() {
 
   fs.mkdirSync(runDir, { recursive: true });
   if (tag) writeFile(path.join(runDir, "run-meta.json"), JSON.stringify({ tag, ts: new Date().toISOString() }, null, 2));
-  logEvent(runDir, { phase: "factory", event: "start", mode, stopAfter, caveman, tag });
+  logEvent(runDir, { phase: "factory", event: "start", mode, stopAfter, caveman, tag, profile: profileName });
 
+  const isDefault = profileName === "full";
   console.log(`\n${A.bold("Software Factory")} — Pipeline Orchestrator`);
-  console.log(`Run:  ${A.cyan(runId)}${tag ? `  ·  ${A.bold(tag)}` : ""}`);
-  console.log(`Mode: ${mode}${stopAfter ? `  ·  stopping after ${stopAfter}` : ""}${caveman ? `  ·  ${A.dim("caveman")}` : ""}\n`);
+  console.log(`Run:     ${A.cyan(runId)}${tag ? `  ·  ${A.bold(tag)}` : ""}`);
+  console.log(`Profile: ${isDefault ? A.dim(profileName) : A.cyan(profileName)}`);
+  console.log(`Mode:    ${mode}${stopAfter ? `  ·  stopping after ${stopAfter}` : ""}${caveman ? `  ·  ${A.dim("caveman")}` : ""}\n`);
 
-  // ── Brain ────────────────────────────────────────────────────────────────
+  // ── Brain (global, one-time) ─────────────────────────────────────────────
 
   if (!fileExists(BRAIN_PATH)) logEvent(runDir, { phase: "leadership", event: "brain-interview-start" });
   await runBrainInterview(runDir);
 
-  // ── Design ──────────────────────────────────────────────────────────────
+  // ── Graph executor ───────────────────────────────────────────────────────
 
-  const designDone = fileExists(path.join(runDir, "handoff", "build-spec.md"));
+  const profile = JSON.parse(fs.readFileSync(path.join(__dirname, "profiles", `${profileName}.json`), "utf8"));
 
-  if (!designDone) {
-    banner(runDir, "Design");
-    if (runDivision("departments/run-design.js", ["--run-id", runId]) !== 0) {
-      abort(runDir, "Design", "Exiting.", 1);
-    }
-    logEvent(runDir, { phase: "factory", event: "division-complete", division: "design" });
-  } else {
-    console.log(`  ${A.green("✓")}  Design — specs found, skipping\n`);
-  }
-
-  if (stopAfter === "design") {
-    logEvent(runDir, { phase: "factory", event: "stopped-after", division: "design" });
-    console.log("Stopped after Design as requested.\n");
-    io.close();
-    return;
-  }
-
-  // ── Run Brain ────────────────────────────────────────────────────────────
-
-  if (!fileExists(path.join(runDir, "run-brain.md"))) logEvent(runDir, { phase: "leadership", event: "run-brain-start" });
-  await runRunBrainInterview(runDir, mode);
-
-  // ── Build → Review loop ─────────────────────────────────────────────────
-
-  const reviewShipped =
-    !!lastEvent(runDir, "review", "ship-approved") ||
-    !!lastEvent(runDir, "review", "ship-approved-override");
-
-  if (!reviewShipped) {
-    let reviewLoopLimit = readLoopLimit(runDir);
-    for (let loop = 1; loop <= MAX_LOOPS; loop++) {
-      const loopNote = loop > 1 ? `Build → Review  ·  attempt ${loop} of ${MAX_LOOPS}` : "";
-
-      // Build — skip only if artifact exists and no pending review failures
-      const artifactReady = fileExists(path.join(runDir, "artifact", "MANIFEST.txt"));
-      if (!artifactReady || hasPendingReviewFailures(runDir)) {
-        banner(runDir, "Build", loopNote);
-        const buildExit = await runBuildWithFeedback(runId, runDir, mode);
-        if (buildExit !== 0) abort(runDir, "Build", "Exiting.", loop);
-        logEvent(runDir, { phase: "factory", event: "division-complete", division: "build", loop });
-        await checkBudget(runDir, `after Build (loop ${loop})`);
-      } else {
-        console.log(`  ${A.green("✓")}  Build — artifact found, skipping\n`);
+  await runGraph(profile, {
+    runId,
+    runDir,
+    mode,
+    stopAfter,
+    caveman,
+    io,
+    logTokens,
+    onNodeComplete: async (nodeId) => {
+      if (nodeId === "design") {
+        if (!fileExists(path.join(runDir, "run-brain.md"))) {
+          logEvent(runDir, { phase: "leadership", event: "run-brain-start" });
+        }
+        await runRunBrainInterview(runDir);
       }
+    },
+  });
 
-      if (stopAfter === "build") {
-        logEvent(runDir, { phase: "factory", event: "stopped-after", division: "build" });
-        console.log("Stopped after Build as requested.\n");
-        io.close();
-        return;
-      }
-
-      // Review
-      banner(runDir, "Review", loopNote);
-      const reviewExit = mode === "auto"
-        ? await runDivisionAuto("departments/run-review.js", ["--run-id", runId], (sig) => handleReviewSignal(runDir, sig), runDir)
-        : runDivision("departments/run-review.js", ["--run-id", runId]);
-      if (reviewExit !== 0) abort(runDir, "Review", "Exiting.", loop);
-      logEvent(runDir, { phase: "factory", event: "division-complete", division: "review", loop });
-      await checkBudget(runDir, `after Review (loop ${loop})`);
-
-      if (stopAfter === "review") {
-        logEvent(runDir, { phase: "factory", event: "stopped-after", division: "review" });
-        console.log("Stopped after Review as requested.\n");
-        io.close();
-        return;
-      }
-
-      // Did it ship?
-      const nowShipped =
-        !!lastEvent(runDir, "review", "ship-approved") ||
-        !!lastEvent(runDir, "review", "ship-approved-override");
-      if (nowShipped) break;
-
-      if (!hasPendingReviewFailures(runDir)) {
-        abort(runDir, "Review", "No-ship with no failure reports written. Cannot route back to Build.", loop);
-      }
-
-      if (loop >= reviewLoopLimit) {
-        const answer = await escalate(runDir, `Build → Review loop limit reached (${loop} attempts)`, {
-          at: `Build → Review loop ${loop}`,
-          detail: `The factory has run ${loop} Build → Review loop(s) without shipping.\nFailure reports remain. Review is still returning no-ship.`,
-          options: ["continue (one more loop)", "abort"],
-        });
-        if (!/^continue/i.test(answer)) abort(runDir, "Review", "Escalated — operator chose to abort.", loop);
-        reviewLoopLimit = loop + 1; // grant one more
-      }
-
-      console.log(`\n  ${A.yellow("Review returned no-ship — routing failure reports back to Build.")}\n`);
-      logEvent(runDir, { phase: "factory", event: "loop-back", from: "review", to: "build", loop });
-    }
-  } else {
-    console.log(`  ${A.green("✓")}  Review — already shipped, skipping\n`);
-  }
-
-  // ── Build → Security loop ───────────────────────────────────────────────
-
-  const securityApproved = !!lastEvent(runDir, "security", "security-approved");
-
-  if (!securityApproved) {
-    let securityLoopLimit = readLoopLimit(runDir);
-    for (let loop = 1; loop <= MAX_LOOPS; loop++) {
-      const loopNote = loop > 1 ? `Build → Security  ·  attempt ${loop} of ${MAX_LOOPS}` : "";
-
-      // Rebuild only if security sent remediations
-      if (hasPendingSecurityRemediations(runDir)) {
-        banner(runDir, "Build", loopNote);
-        const rebuildExit = await runBuildWithFeedback(runId, runDir, mode);
-        if (rebuildExit !== 0) abort(runDir, "Build", "Failed during security remediation. Exiting.", loop);
-        logEvent(runDir, { phase: "factory", event: "division-complete", division: "build", loop, context: "security-remediation" });
-        await checkBudget(runDir, `after Build / security remediation (loop ${loop})`);
-      }
-
-      // Security
-      banner(runDir, "Security", loopNote);
-      const code = mode === "auto"
-        ? await runDivisionAuto("departments/run-security.js", ["--run-id", runId], (sig) => handleSecuritySignal(runDir, sig), runDir)
-        : runDivision("departments/run-security.js", ["--run-id", runId]);
-      logEvent(runDir, { phase: "factory", event: "division-complete", division: "security", loop });
-      await checkBudget(runDir, `after Security (loop ${loop})`);
-
-      if (code === 0) break; // approved
-
-      if (!hasPendingSecurityRemediations(runDir)) {
-        abort(runDir, "Security", "Blocked with no remediation report written. Cannot route back to Build.", loop);
-      }
-
-      if (loop >= securityLoopLimit) {
-        const answer = await escalate(runDir, `Build → Security loop limit reached (${loop} attempts)`, {
-          at: `Build → Security loop ${loop}`,
-          detail: `The factory has run ${loop} Build → Security loop(s) without passing.\nRemediation requests remain. Security is still blocking.`,
-          options: ["continue (one more loop)", "abort"],
-        });
-        if (!/^continue/i.test(answer)) abort(runDir, "Security", "Escalated — operator chose to abort.", loop);
-        securityLoopLimit = loop + 1;
-      }
-
-      console.log(`\n  ${A.yellow("Security blocked — routing remediations back to Build.")}\n`);
-      logEvent(runDir, { phase: "factory", event: "loop-back", from: "security", to: "build", loop });
-    }
-  } else {
-    console.log(`  ${A.green("✓")}  Security — already approved, skipping\n`);
-  }
-
-  // ── Done ────────────────────────────────────────────────────────────────
+  // ── Pipeline complete ────────────────────────────────────────────────────
 
   logEvent(runDir, { phase: "factory", event: "pipeline-complete" });
   writeLedgerEntry(runDir);
 
   const { totOut } = readTokenUsage(runDir);
-  const { limit } = readBudgetLimit(runDir);
+  const { limit }  = readBudgetLimit(runDir);
   const budgetLine = limit
     ? `  Tokens:   ${totOut.toLocaleString("en-US")} / ${limit.toLocaleString("en-US")} output`
     : `  Tokens:   ${totOut.toLocaleString("en-US")} output`;

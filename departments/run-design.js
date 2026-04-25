@@ -25,8 +25,9 @@ const { cliAdapter } = require("../io/adapters/cli");
 const { fileAdapter } = require("../io/adapters/file");
 const { createPhaseDisplay, createTicker, setRunDir } = require("../lib/display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
-const { readFile, writeFile, buildSystemPrompt, logEvent } = require("../lib/runner-utils");
+const { readFile, writeFile, buildSystemPrompt, logEvent, fileExists } = require("../lib/runner-utils");
 const { claudeCall, claudeTurn } = require("../adapters/claude-cli");
+const { runReflector } = require("../lib/memory");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -40,6 +41,9 @@ const SHARED_OUTPUT_FORMATS = path.join(
   "shared",
   "output-formats.md"
 );
+
+// Memory context — loaded once at startup from memory-context.md written by graph executor.
+let memoryContext = null;
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -61,7 +65,7 @@ function runId() {
 
 async function runInterviewPhase(io, display, agentPromptPath, systemContext, transcriptPath, completionSignal, onUsage) {
   const agentPrompt = readFile(agentPromptPath);
-  const systemPrompt = buildSystemPrompt(readFile(SHARED_CONVENTIONS), readFile(SHARED_OUTPUT_FORMATS), agentPrompt, systemContext || "");
+  const systemPrompt = buildSystemPrompt(readFile(SHARED_CONVENTIONS), readFile(SHARED_OUTPUT_FORMATS), agentPrompt, systemContext || "", memoryContext);
 
   const conversationHistory = [];
 
@@ -129,6 +133,9 @@ async function main() {
 
   fs.mkdirSync(path.join(runDir, "handoff"), { recursive: true });
 
+  const memCtxPath = path.join(runDir, "memory-context.md");
+  memoryContext = fileExists(memCtxPath) ? readFile(memCtxPath) : null;
+
   console.log(`\nSoftware Factory — Design Division`);
   console.log(`Run: ${id}\n`);
 
@@ -188,7 +195,8 @@ async function main() {
     const checkerPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "design", "consistency-checker.md"))
+      readFile(path.join(AGENTS_DIR, "design", "consistency-checker.md")),
+      memoryContext
     );
 
     const checkerMessage = [
@@ -236,7 +244,8 @@ async function main() {
     const writerPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "design", "spec-writer.md"))
+      readFile(path.join(AGENTS_DIR, "design", "spec-writer.md")),
+      memoryContext
     );
 
     const writerMessage = [
@@ -274,6 +283,22 @@ async function main() {
 
   writeTokenTable(runDir);
   writeTimeTable(runDir);
+
+  const designManifestPath = path.join(runDir, "handoff", "factory-manifest.json");
+  const designManifest = fileExists(designManifestPath) ? JSON.parse(readFile(designManifestPath)) : {};
+  const clarificationTranscriptExists = fileExists(path.join(runDir, "clarification-transcript.md"));
+  const clarificationContent = clarificationTranscriptExists ? readFile(path.join(runDir, "clarification-transcript.md")) : "";
+  const clarificationIssueCount = (clarificationContent.match(/^\[/gm) || []).length;
+
+  const reflectorContext = [
+    `## Run ID\n\n${id}`,
+    `## Factory Manifest\n\n${JSON.stringify(designManifest, null, 2)}`,
+    `## Outcome\n\nDesign division completed all phases successfully.`,
+    `## Clarification Issues Found\n\n${clarificationIssueCount}`,
+  ].join("\n\n---\n\n");
+
+  await runReflector("design", runDir, reflectorContext, (u) => logTokens(runDir, "Design", "Wiki Reflector", u));
+
   console.log(`\n${"─".repeat(60)}`);
   console.log(`  Design Division complete.`);
   console.log(`  Run: ${id}`);

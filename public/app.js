@@ -27,6 +27,10 @@ const state = {
   activity: [],
   // Factory input chat pane
   pendingInput: null,
+  // Factory Memory
+  memory: { data: null, activeDept: "design", activeTab: "wiki" },
+  // Profiles
+  profiles: { activeName: null, content: null, mode: "preview" },
 };
 
 // ---------------------------------------------------------------------------
@@ -45,6 +49,8 @@ function setView(name) {
   $$(".nav-item").forEach((el) => el.classList.toggle("active", el.dataset.view === name));
   $$(".view").forEach((el) => el.classList.toggle("active", el.id === `view-${name}`));
   if (name === "browser") loadRunList();
+  if (name === "profiles") loadProfiles();
+  if (name === "memory") loadMemoryData();
 }
 
 // ---------------------------------------------------------------------------
@@ -102,11 +108,11 @@ function tokensByPhase(entries) {
 // Pipeline bar
 // ---------------------------------------------------------------------------
 
-function derivePhaseTimings(logEvents) {
+function derivePhaseTimings(logEvents, profileNodes) {
   const timings = {};
   for (const ev of logEvents) {
     const p = ev.phase;
-    if (!["design", "build", "review", "security"].includes(p)) continue;
+    if (!profileNodes.includes(p)) continue;
     if (ev.event === "start" && ev.ts && !timings[p]) {
       timings[p] = { startTs: ev.ts, endTs: null };
     } else if (ev.event === `${p}-division-complete` && ev.ts && timings[p]) {
@@ -117,16 +123,15 @@ function derivePhaseTimings(logEvents) {
 }
 
 function renderPipelineBar(pState) {
-  const phases = [
-    { key: "design", label: "Design" },
-    { key: "build", label: "Build" },
-    { key: "review", label: "Review" },
-    { key: "security", label: "Security" },
-  ];
+  const profileNodes = pState?.profileNodes ?? ["design", "build", "review", "security"];
+  const phases = profileNodes.map((key) => ({
+    key,
+    label: key.charAt(0).toUpperCase() + key.slice(1),
+  }));
   const bar = $("#pipeline-bar");
   bar.innerHTML = "";
 
-  const timings = derivePhaseTimings(state.logEvents);
+  const timings = derivePhaseTimings(state.logEvents, profileNodes);
   let hasActive = false;
 
   for (const { key, label } of phases) {
@@ -794,6 +799,355 @@ function submitInputPane() {
 }
 
 // ---------------------------------------------------------------------------
+// Factory Profiles
+// ---------------------------------------------------------------------------
+
+function setProfilesMode(mode) {
+  state.profiles.mode = mode;
+  $("#profiles-main").className = `mode-${mode}`;
+  $$(".profiles-mode-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.mode === mode));
+  if (mode === "preview") renderProfileGraph($("#profiles-editor").value);
+}
+
+async function loadProfiles() {
+  const sidebar = $("#profiles-sidebar");
+  sidebar.innerHTML = `<div style="color: var(--muted); padding: 12px 14px; font-size: 12px;">Loading…</div>`;
+  try {
+    const res = await fetch("/api/profiles");
+    const profiles = await res.json();
+    sidebar.innerHTML = "";
+    if (profiles.length === 0) {
+      sidebar.innerHTML = `<div style="color: var(--muted); padding: 12px 14px; font-size: 12px;">No profiles</div>`;
+      return;
+    }
+    for (const p of profiles) {
+      const item = document.createElement("div");
+      item.className = "profile-item" + (p.name === state.profiles.activeName ? " active" : "");
+      item.innerHTML = `
+        <span>${escHtml(p.name)}</span>
+        <span class="profile-item-nodes">${p.nodeCount}n</span>
+      `;
+      item.addEventListener("click", () => loadProfile(p.name));
+      sidebar.appendChild(item);
+    }
+    if (!state.profiles.activeName && profiles.length > 0) {
+      loadProfile(profiles[0].name);
+    }
+  } catch {
+    sidebar.innerHTML = `<div style="color: var(--red); padding: 12px 14px; font-size: 12px;">Failed to load</div>`;
+  }
+}
+
+async function loadProfile(name) {
+  state.profiles.activeName = name;
+  $$(".profile-item").forEach((el) => {
+    el.classList.toggle("active", el.querySelector("span")?.textContent === name);
+  });
+  const editor = $("#profiles-editor");
+  const errEl = $("#profiles-editor-error");
+  editor.value = "Loading…";
+  editor.disabled = true;
+  errEl.textContent = "";
+  $("#profiles-save-btn").disabled = true;
+  try {
+    const res = await fetch(`/api/profiles/${encodeURIComponent(name)}`);
+    const data = await res.json();
+    editor.value = data.content;
+    editor.disabled = false;
+    state.profiles.content = data.content;
+    $("#profiles-save-btn").disabled = false;
+    renderProfileGraph(data.content);
+  } catch {
+    editor.value = "";
+    errEl.textContent = "Failed to load profile.";
+  }
+}
+
+async function saveProfile() {
+  const name = state.profiles.activeName;
+  if (!name) return;
+  const content = $("#profiles-editor").value;
+  const errEl = $("#profiles-editor-error");
+  const btn = $("#profiles-save-btn");
+  const badge = $("#profiles-saved-badge");
+
+  try { JSON.parse(content); } catch (e) {
+    errEl.textContent = `Invalid JSON: ${e.message}`;
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/profiles/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.error ?? "Save failed.";
+    } else {
+      errEl.textContent = "";
+      state.profiles.content = content;
+      badge.textContent = "Saved ✓";
+      setTimeout(() => { badge.textContent = ""; }, 2000);
+      loadProfiles();
+    }
+  } catch {
+    errEl.textContent = "Save failed.";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderProfileGraph(jsonText) {
+  const pane = $("#profiles-graph-pane");
+  pane.innerHTML = "";
+
+  let profile;
+  try { profile = JSON.parse(jsonText); } catch {
+    pane.innerHTML = `<div style="color: var(--muted); font-size: 12px; padding: 4px 0;">Invalid JSON — fix editor to preview</div>`;
+    return;
+  }
+
+  const nodes = profile.nodes ?? [];
+  if (nodes.length === 0) {
+    pane.innerHTML = `<div style="color: var(--muted); font-size: 12px; padding: 4px 0;">No nodes defined</div>`;
+    return;
+  }
+
+  // Profile header
+  const budgetPts = (profile.budgetCheckpoints ?? []).length;
+  pane.innerHTML = `
+    <div class="graph-profile-header">${escHtml(profile.name ?? profile.id ?? "Untitled")}</div>
+    <div class="graph-profile-meta">${nodes.length} node${nodes.length === 1 ? "" : "s"}${budgetPts ? ` · ${budgetPts} budget checkpoint${budgetPts === 1 ? "" : "s"}` : ""}</div>
+  `;
+
+  // Build edge index
+  const fwdEdges = {};   // from -> edge
+  const backEdges = {};  // from -> [edges]
+  for (const edge of (profile.edges ?? [])) {
+    if (edge.type === "backward") {
+      (backEdges[edge.from] = backEdges[edge.from] ?? []).push(edge);
+    } else {
+      fwdEdges[edge.from] = edge;
+    }
+  }
+
+  // Budget checkpoint set
+  const budgetAfter = new Set(
+    (profile.budgetCheckpoints ?? []).map((b) => b.replace(/^after:/, ""))
+  );
+
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const card = document.createElement("div");
+    card.className = "graph-node";
+
+    // ID line
+    const idEl = document.createElement("div");
+    idEl.className = `graph-node-id ${escHtml(node.id ?? "")}`;
+    idEl.textContent = node.id ?? "?";
+    card.appendChild(idEl);
+
+    // Runner filename
+    if (node.runner) {
+      const runnerEl = document.createElement("div");
+      runnerEl.className = "graph-node-runner";
+      runnerEl.textContent = node.runner.split("/").pop();
+      card.appendChild(runnerEl);
+    }
+
+    // Badges: skip conditions, feedback loop, budget checkpoint
+    const badgesEl = document.createElement("div");
+    badgesEl.className = "graph-node-badges";
+    if (node.skipIf) {
+      badgesEl.innerHTML += `<span class="graph-badge skip" title="Skip if file exists: ${escHtml(node.skipIf)}">skip if file</span>`;
+    }
+    if (node.skipIfEvent) {
+      badgesEl.innerHTML += `<span class="graph-badge skip" title="Skip if event: ${escHtml(node.skipIfEvent)}">skip if: ${escHtml(node.skipIfEvent)}</span>`;
+    }
+    if (node.feedbackLoop) {
+      badgesEl.innerHTML += `<span class="graph-badge loop">↺ feedback loop</span>`;
+    }
+    if (budgetAfter.has(node.id)) {
+      badgesEl.innerHTML += `<span class="graph-badge budget">budget check</span>`;
+    }
+    if (badgesEl.innerHTML) card.appendChild(badgesEl);
+
+    // Divider before memory
+    const mem = node.memory;
+    if (mem) {
+      card.appendChild(Object.assign(document.createElement("hr"), { className: "graph-node-divider" }));
+      const wikis = mem.readWiki?.length ? mem.readWiki.join(", ") : "none";
+      const runs  = mem.readRuns?.length ? mem.readRuns.join(", ") : "none";
+      const write = mem.write ?? "—";
+      const memEl = document.createElement("div");
+      memEl.className = "graph-node-mem";
+      memEl.innerHTML = `wiki in: ${escHtml(wikis)}<br>runs in: ${escHtml(runs)}<br>writes: ${escHtml(write)}`;
+      card.appendChild(memEl);
+    }
+
+    // Backward edges originating from this node
+    const backs = backEdges[node.id] ?? [];
+    if (backs.length) {
+      const backEl = document.createElement("div");
+      backEl.className = "graph-node-back";
+      backEl.innerHTML = backs
+        .map((e) => `↩ on: ${escHtml(e.on ?? "?")} → ${escHtml(e.to ?? "?")}`)
+        .join("<br>");
+      card.appendChild(backEl);
+    }
+
+    pane.appendChild(card);
+
+    // Arrow to next node
+    if (i < nodes.length - 1) {
+      const fwd = fwdEdges[node.id];
+      const arrow = document.createElement("div");
+      arrow.className = "graph-arrow";
+      arrow.innerHTML = `<span>↓</span>${fwd?.on ? `<span class="graph-arrow-cond">on: ${escHtml(fwd.on)}</span>` : ""}`;
+      pane.appendChild(arrow);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Factory Memory
+// ---------------------------------------------------------------------------
+
+async function loadMemoryData() {
+  const content = $("#memory-content");
+  content.className = "";
+  content.innerHTML = `<div style="color: var(--muted); padding: 20px; font-size: 13px;">Loading…</div>`;
+  try {
+    const res = await fetch("/api/memory");
+    state.memory.data = await res.json();
+  } catch {
+    content.innerHTML = `<div style="color: var(--red); padding: 20px;">Failed to load memory.</div>`;
+    return;
+  }
+  renderMemoryView();
+}
+
+function renderMemoryView() {
+  const { data, activeDept, activeTab } = state.memory;
+  if (!data) return;
+
+  const deptRow = $("#memory-dept-row");
+  deptRow.innerHTML = "";
+  for (const dept of data.departments) {
+    const btn = document.createElement("button");
+    btn.className = "cat-btn" + (dept === activeDept ? " active" : "");
+    btn.textContent = dept.charAt(0).toUpperCase() + dept.slice(1);
+    btn.addEventListener("click", () => {
+      state.memory.activeDept = dept;
+      deptRow.querySelectorAll(".cat-btn").forEach((b) =>
+        b.classList.toggle("active", b.textContent.toLowerCase() === dept)
+      );
+      renderMemoryContent();
+    });
+    deptRow.appendChild(btn);
+  }
+
+  const tabRow = $("#memory-tab-row");
+  tabRow.innerHTML = "";
+  for (const [tab, label] of [["wiki", "Wiki"], ["runs", "Run Log"]]) {
+    const btn = document.createElement("button");
+    btn.className = "tab-btn" + (tab === activeTab ? " active" : "");
+    btn.textContent = label;
+    btn.addEventListener("click", () => {
+      state.memory.activeTab = tab;
+      tabRow.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      renderMemoryContent();
+    });
+    tabRow.appendChild(btn);
+  }
+
+  renderMemoryContent();
+}
+
+function renderMemoryContent() {
+  const { activeDept, activeTab } = state.memory;
+  if (activeTab === "wiki") renderMemoryWiki(activeDept);
+  else renderMemoryRunLog(activeDept);
+}
+
+function renderMemoryWiki(dept) {
+  const content = $("#memory-content");
+  const deptData = state.memory.data?.data?.[dept];
+  if (!deptData?.wiki) {
+    content.className = "";
+    const label = dept.charAt(0).toUpperCase() + dept.slice(1);
+    content.innerHTML = `
+      <div class="empty-state">
+        <span>No wiki entries yet for ${escHtml(label)}</span>
+        <span class="hint">Craft knowledge accumulates here after completed runs. The factory learns over time.</span>
+      </div>`;
+    return;
+  }
+  content.className = "mem-wiki";
+  content.innerHTML = marked.parse(deptData.wiki);
+  content.querySelectorAll("pre code").forEach((el) => hljs.highlightElement(el));
+}
+
+function renderMemoryRunLog(dept) {
+  const content = $("#memory-content");
+  const deptData = state.memory.data?.data?.[dept];
+  if (!deptData?.runs?.length) {
+    content.className = "";
+    const label = dept.charAt(0).toUpperCase() + dept.slice(1);
+    content.innerHTML = `
+      <div class="empty-state">
+        <span>No run records yet for ${escHtml(label)}</span>
+        <span class="hint">Run the factory to see structured records of each completed run.</span>
+      </div>`;
+    return;
+  }
+  content.className = "mem-run-log";
+  content.innerHTML = "";
+  for (const run of [...deptData.runs].reverse()) {
+    const record = run.record ?? run;
+    const projectName = record.projectName ?? "Unknown project";
+    const outcome = record.outcome ?? "";
+    const ts = run.ts ? fmtTs(run.ts) : "";
+
+    const el = document.createElement("div");
+    el.className = "run-record";
+
+    const header = document.createElement("div");
+    header.className = "run-record-header";
+    header.innerHTML = `
+      <span class="run-record-toggle">▶</span>
+      <span class="run-record-name">${escHtml(projectName)}</span>
+      ${outcome ? `<span class="run-record-outcome">${escHtml(outcome)}</span>` : ""}
+      <span class="run-record-ts">${escHtml(ts)}</span>
+    `;
+
+    const body = document.createElement("div");
+    body.className = "run-record-body";
+    body.style.display = "none";
+    const rows = Object.entries(record)
+      .map(([k, v]) => `<tr>
+        <td class="run-field-key">${escHtml(k)}</td>
+        <td class="run-field-val">${escHtml(typeof v === "object" ? JSON.stringify(v, null, 2) : String(v ?? ""))}</td>
+      </tr>`)
+      .join("");
+    body.innerHTML = `<table class="run-field-table">${rows}</table>`;
+
+    header.addEventListener("click", () => {
+      const open = body.style.display !== "none";
+      body.style.display = open ? "none" : "block";
+      header.querySelector(".run-record-toggle").textContent = open ? "▶" : "▼";
+    });
+
+    el.appendChild(header);
+    el.appendChild(body);
+    content.appendChild(el);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
@@ -839,6 +1193,17 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#chat-pane").style.height = newH + "px";
   });
   document.addEventListener("mouseup", () => { dragStart = null; });
+
+  // Profiles
+  $$(".profiles-mode-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setProfilesMode(btn.dataset.mode));
+  });
+  $("#profiles-save-btn").addEventListener("click", saveProfile);
+  $("#profiles-editor").addEventListener("input", () => {
+    renderProfileGraph($("#profiles-editor").value);
+  });
+
+  $("#memory-refresh-btn").addEventListener("click", loadMemoryData);
 
   setView("monitor");
   detectActiveRun();

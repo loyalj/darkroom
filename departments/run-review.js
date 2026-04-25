@@ -27,6 +27,7 @@ const { createPhaseDisplay, agentStream, A, formatElapsed, setRunDir } = require
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
 const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, extractCompact } = require("../lib/runner-utils");
 const { claudeCall, claudeToolCallAsync } = require("../adapters/claude-cli");
+const { runReflector } = require("../lib/memory");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -36,6 +37,9 @@ const AGENTS_DIR = path.join(__dirname, "..", "agents");
 const RUNS_DIR = path.join(__dirname, "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md");
+
+// Memory context — loaded once at startup from memory-context.md written by graph executor.
+let memoryContext = null;
 
 
 // ---------------------------------------------------------------------------
@@ -105,7 +109,8 @@ function runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec, runDir) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "review", "scenario-analyst.md"))
+    readFile(path.join(AGENTS_DIR, "review", "scenario-analyst.md")),
+    memoryContext
   );
 
   const userMessage = [
@@ -162,7 +167,8 @@ async function runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, art
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
     readFile(path.join(AGENTS_DIR, "review", "explorer.md")),
-    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "scenario-result.md")) : null
+    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "scenario-result.md")) : null,
+    memoryContext
   );
 
   let completed = 0;
@@ -262,7 +268,8 @@ async function runEdgeCaseAgent(reviewDir, coverageMap, reviewSpec, runtimeSpec,
     const plannerPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "review", "edge-case-planner.md"))
+      readFile(path.join(AGENTS_DIR, "review", "edge-case-planner.md")),
+      memoryContext
     );
 
     const scenarioList = coverageMap.scenarios.map((s) => `- [${s.id}] ${s.name}`).join("\n");
@@ -297,7 +304,8 @@ async function runEdgeCaseAgent(reviewDir, coverageMap, reviewSpec, runtimeSpec,
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
     readFile(path.join(AGENTS_DIR, "review", "edge-case-runner.md")),
-    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "edge-case-result.md")) : null
+    caveman ? readFile(path.join(AGENTS_DIR, "caveman", "edge-case-result.md")) : null,
+    memoryContext
   );
 
   let completed = 0;
@@ -407,7 +415,8 @@ async function runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir, cavem
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "review", "verdict.md"))
+    readFile(path.join(AGENTS_DIR, "review", "verdict.md")),
+    memoryContext
   );
 
   const scenarioContext = caveman
@@ -599,6 +608,9 @@ async function main() {
   const runtimeSpec = readFile(path.join(handoffDir, "runtime-spec.md"));
   const factoryManifest = readJSON(path.join(handoffDir, "factory-manifest.json"));
 
+  const memCtxPath = path.join(runDir, "memory-context.md");
+  memoryContext = fileExists(memCtxPath) ? readFile(memCtxPath) : null;
+
   logEvent(runDir, { phase: "review", event: "start" });
 
   // Phase 1: Runtime standup
@@ -625,6 +637,29 @@ async function main() {
 
   writeTokenTable(runDir);
   writeTimeTable(runDir);
+
+  const coverageMapPath = path.join(reviewDir, "coverage-map.json");
+  const coverageMap2 = fileExists(coverageMapPath) ? readJSON(coverageMapPath) : { scenarios: [] };
+  const reportsDir2 = path.join(reviewDir, "scenario-reports");
+  const scenarioPassed = fileExists(reportsDir2)
+    ? fs.readdirSync(reportsDir2).filter((f) => f.endsWith(".json"))
+        .map((f) => { try { return readJSON(path.join(reportsDir2, f)); } catch { return null; } })
+        .filter(Boolean).filter((r) => r.status === "pass").length
+    : 0;
+  const scenarioFailed = (coverageMap2.scenarios?.length ?? 0) - scenarioPassed;
+  const verdictPath2 = path.join(reviewDir, "verdict-report.md");
+  const verdictText = fileExists(verdictPath2) ? readFile(verdictPath2).match(/^#\s*Verdict:\s*(\S.*)/im)?.[1] ?? "unknown" : "unknown";
+  const reviewManifest = fileExists(path.join(handoffDir, "factory-manifest.json")) ? readJSON(path.join(handoffDir, "factory-manifest.json")) : {};
+
+  const reflCtx = [
+    `## Run ID\n\n${id}`,
+    `## Factory Manifest\n\n${JSON.stringify(reviewManifest, null, 2)}`,
+    `## Outcome\n\n${shipped ? "Ship approved." : "No-ship — failure reports written."}`,
+    `## Verdict\n\n${verdictText}`,
+    `## Scenario Results\n\n${scenarioPassed} passed, ${Math.max(0, scenarioFailed)} failed out of ${coverageMap2.scenarios?.length ?? 0} total`,
+  ].join("\n\n---\n\n");
+  await runReflector("review", runDir, reflCtx, (u) => logTokens(runDir, "Review", "Wiki Reflector", u));
+
   if (shipped) {
     console.log(`\n${hr()}`);
     console.log("  Review Division complete. Ship approved.");
