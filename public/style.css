@@ -200,6 +200,8 @@ body {
 .phase-label.done { color: var(--green); }
 .phase-label.blocked { color: var(--red); }
 .phase-icon { font-size: 16px; }
+.phase-timer { font-size: 10px; color: var(--muted); font-family: var(--font-mono); letter-spacing: 0.02em; }
+.phase-timer-active { color: var(--yellow); }
 
 /* ── Monitor body ── */
 

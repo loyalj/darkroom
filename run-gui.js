@@ -494,6 +494,12 @@ app.get("/api/runs/:id/stream", (req, res) => {
   // Also watch the artifact directory for new files
   const stopArtifactWatch = createFileWatcher(path.join(dir, "artifact"), sendFiles);
 
+  // Watch run-config.json — push budget when run brain writes it
+  const stopBudget = createFileWatcher(path.join(dir, "run-config.json"), () => {
+    const { limit, source } = readBudgetLimit(dir);
+    sseSend(res, "budget", { tokenLimit: limit, tokenLimitSource: source });
+  });
+
   // Watch activity.jsonl — push new lines as they arrive
   const stopActivity = createTailWatcher(activityPath, (lines) => {
     const newActivity = lines.flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
@@ -520,6 +526,7 @@ app.get("/api/runs/:id/stream", (req, res) => {
     stopTranscripts.forEach((s) => s());
     stopFileWatchers.forEach((s) => s());
     stopArtifactWatch();
+    stopBudget();
     stopActivity();
     stopPendingInput();
     clearInterval(heartbeat);

@@ -25,7 +25,8 @@ const { cliAdapter } = require("../io/adapters/cli");
 const { fileAdapter } = require("../io/adapters/file");
 const { createPhaseDisplay, createTicker, setRunDir } = require("../lib/display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
-const { readFile, writeFile, buildSystemPrompt, logEvent, claudeCall, claudeTurn } = require("../lib/runner-utils");
+const { readFile, writeFile, buildSystemPrompt, logEvent } = require("../lib/runner-utils");
+const { claudeCall, claudeTurn } = require("../adapters/claude-cli");
 
 // ---------------------------------------------------------------------------
 // Config

@@ -17,6 +17,7 @@ const state = {
   sse: null,
   tokenLimit: null,
   tokenLimitSource: null,
+  phaseTickInterval: null,
   // Document viewer
   fileCategories: [],    // [{ label, files: [{ key, label, relPath, type, ext? }] }]
   activeCategory: null,  // currently selected category label
@@ -81,6 +82,13 @@ function tokenOutputTotal(entries) {
   return entries.reduce((s, t) => s + (t.output || 0), 0);
 }
 
+function fmtDuration(ms) {
+  if (ms < 60000) return `${Math.round(ms / 1000)}s`;
+  const m = Math.floor(ms / 60000);
+  const s = Math.round((ms % 60000) / 1000);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function tokensByPhase(entries) {
   const phases = {};
   for (const t of entries) {
@@ -94,6 +102,20 @@ function tokensByPhase(entries) {
 // Pipeline bar
 // ---------------------------------------------------------------------------
 
+function derivePhaseTimings(logEvents) {
+  const timings = {};
+  for (const ev of logEvents) {
+    const p = ev.phase;
+    if (!["design", "build", "review", "security"].includes(p)) continue;
+    if (ev.event === "start" && ev.ts && !timings[p]) {
+      timings[p] = { startTs: ev.ts, endTs: null };
+    } else if (ev.event === `${p}-division-complete` && ev.ts && timings[p]) {
+      timings[p].endTs = ev.ts;
+    }
+  }
+  return timings;
+}
+
 function renderPipelineBar(pState) {
   const phases = [
     { key: "design", label: "Design" },
@@ -103,15 +125,41 @@ function renderPipelineBar(pState) {
   ];
   const bar = $("#pipeline-bar");
   bar.innerHTML = "";
+
+  const timings = derivePhaseTimings(state.logEvents);
+  let hasActive = false;
+
   for (const { key, label } of phases) {
     const status = pState?.phases?.[key] ?? "pending";
+    if (status === "active") hasActive = true;
+
+    let timerHtml = "";
+    const t = timings[key];
+    if (t) {
+      if (t.endTs) {
+        const ms = new Date(t.endTs) - new Date(t.startTs);
+        timerHtml = `<div class="phase-timer">${fmtDuration(ms)}</div>`;
+      } else {
+        const elapsed = Date.now() - new Date(t.startTs).getTime();
+        timerHtml = `<div class="phase-timer phase-timer-active">${fmtDuration(elapsed)}</div>`;
+      }
+    }
+
     const block = document.createElement("div");
     block.className = "phase-block";
     block.innerHTML = `
       <div class="phase-label ${status}">${label}</div>
       <div class="phase-icon">${fmtPhaseIcon(status)}</div>
+      ${timerHtml}
     `;
     bar.appendChild(block);
+  }
+
+  if (hasActive && !state.phaseTickInterval) {
+    state.phaseTickInterval = setInterval(() => renderPipelineBar(state.pipelineState), 1000);
+  } else if (!hasActive && state.phaseTickInterval) {
+    clearInterval(state.phaseTickInterval);
+    state.phaseTickInterval = null;
   }
 }
 
@@ -437,6 +485,7 @@ function renderActivity() {
 
 function connectRun(runId) {
   if (state.sse) { state.sse.close(); state.sse = null; }
+  if (state.phaseTickInterval) { clearInterval(state.phaseTickInterval); state.phaseTickInterval = null; }
   if (!runId) return;
 
   state.activeRunId = runId;
@@ -486,6 +535,11 @@ function connectRun(runId) {
       renderPipelineBar(state.pipelineState);
       $("#current-step").textContent = state.pipelineState?.currentStep ?? "Waiting…";
       renderActivity();
+
+    } else if (msg.type === "budget") {
+      state.tokenLimit = msg.tokenLimit ?? null;
+      state.tokenLimitSource = msg.tokenLimitSource ?? null;
+      renderBudgetBar(state.tokens);
 
     } else if (msg.type === "tokens") {
       state.tokens.push(...(msg.newTokens ?? []));
@@ -548,6 +602,7 @@ function renderAll() {
 
 function showIdleState() {
   if (state.sse) { state.sse.close(); state.sse = null; }
+  if (state.phaseTickInterval) { clearInterval(state.phaseTickInterval); state.phaseTickInterval = null; }
   state.activeRunId = null;
   state.logEvents = [];
   state.tokens = [];

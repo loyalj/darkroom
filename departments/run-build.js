@@ -25,7 +25,8 @@ const { cliAdapter } = require("../io/adapters/cli");
 const { fileAdapter } = require("../io/adapters/file");
 const { createPhaseDisplay, createPlainDisplay, agentStream, A, formatElapsed, setRunDir } = require("../lib/display");
 const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
-const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, writeDecision, hr, claudeRaw, claudeCall, claudeTurn, runLockableInterview, claudeToolCallAsync, collectSourceFiles } = require("../lib/runner-utils");
+const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, writeDecision, hr, runLockableInterview, collectSourceFiles } = require("../lib/runner-utils");
+const { claudeRaw, claudeCall, claudeTurn, claudeToolCallAsync } = require("../adapters/claude-cli");
 
 // ---------------------------------------------------------------------------
 // Config

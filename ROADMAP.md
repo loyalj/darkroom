@@ -104,24 +104,24 @@ Everything runs identically after this phase. Clean stopping point.
 
 ---
 
-### Phase 2 — Execution Adapter Extraction
+### Phase 2 — Execution Adapter Extraction ✓ COMPLETE
 **Type:** Refactor with a clear seam. Prerequisite for future adapter swapping.
 **Risk:** Medium. Significant file movement but no logic changes.
 **Depends on:** Phase 1
+**Completed:** 2026-04-24
 
-Extract all Claude subprocess calls from `lib/runner-utils.js` into `adapters/claude-cli.js`:
-- `claudeRaw`
-- `claudeCall`
-- `claudeTurn`
-- `claudeToolCall`
-- `claudeToolCallAsync`
-
-After this, `runner-utils.js` contains only: file IO helpers, string utilities, logging helpers,
-and the `runLockableInterview` loop. It has zero execution logic.
-
-`adapters/claude-cli.js` becomes the single module that knows how to invoke Claude. Future adapter
-swapping (API, local model) means implementing the same interface in a new file and updating the
-import — one file, one change.
+Steps completed:
+- Created `adapters/claude-cli.js` with `claudeRaw`, `claudeCall`, `claudeTurn`,
+  `claudeToolCall`, `claudeToolCallAsync`; `stripCodeFence` kept as internal helper
+- Removed all Claude functions from `lib/runner-utils.js`; removed `spawn`/`spawnSync` imports
+- `runner-utils.js` now requires `claudeTurn` from the adapter internally (for `runLockableInterview`)
+- Updated all 5 consumers to split their require: IO/utils from `lib/runner-utils`,
+  Claude calls from `adapters/claude-cli`
+  - `run-factory.js`: `claudeRaw`, `claudeCall`, `claudeTurn`
+  - `departments/run-build.js`: `claudeRaw`, `claudeCall`, `claudeTurn`, `claudeToolCallAsync`
+  - `departments/run-design.js`: `claudeCall`, `claudeTurn`
+  - `departments/run-review.js`: `claudeCall`, `claudeToolCallAsync`
+  - `departments/run-security.js`: `claudeCall`
 
 ---
 
