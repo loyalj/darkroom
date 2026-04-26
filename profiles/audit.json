@@ -1,11 +1,13 @@
 {
   "id": "audit",
   "name": "Quality Audit",
+  "description": "Review and security audit only — runs against existing build artifacts.",
+  "requiresRun": true,
   "nodes": [
     {
       "id": "review",
       "runner": "departments/run-review.js",
-      "skipIfEvent": "ship-approved",
+      "skipIf": "review/verdict-report.md",
       "memory": {
         "readWiki": ["design", "build", "review", "security"],
         "readRuns": ["design", "build", "review", "security"],
@@ -15,7 +17,7 @@
     {
       "id": "security",
       "runner": "departments/run-security.js",
-      "skipIfEvent": "security-approved",
+      "skipIf": "security/security-verdict-report.md",
       "memory": {
         "readWiki": ["design", "build", "review", "security"],
         "readRuns": ["design", "build", "review", "security"],

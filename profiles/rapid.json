@@ -1,6 +1,7 @@
 {
   "id": "rapid",
   "name": "Rapid Prototype",
+  "description": "Design and build only — skip review and security for fast iteration.",
   "nodes": [
     {
       "id": "design",

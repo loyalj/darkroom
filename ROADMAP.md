@@ -410,6 +410,122 @@ same entities, broader invocation context.
 
 ---
 
+### Phase 8 — Typed Edges + Department I/O Manifests
+**Type:** Schema + refactor. Prerequisite for the visual graph editor.
+**Depends on:** Phase 5 (graph executor stable)
+
+Right now departments are coupled through hardcoded file paths scattered across every runner.
+Phase 8 codifies the implicit contracts into a type system so departments are fully decoupled
+from each other's paths, and the graph editor can enforce compatibility visually.
+
+#### Type registry (`lib/types.js`)
+
+A single map from type name to canonical file path pattern:
+
+```js
+module.exports = {
+  "design-spec":        "handoff/build-spec.md",
+  "review-spec":        "handoff/review-spec.md",
+  "build-artifact":     "artifact/MANIFEST.txt",
+  "warehouse-snapshot": "handoff/warehouse-snapshot.json",
+  // events are not files — they route via log signals
+  "event:ship-approved":      null,
+  "event:security-approved":  null,
+  "event:build-complete":     null,
+};
+```
+
+#### Department manifests
+
+Each department module exports an I/O declaration alongside its runner:
+
+```js
+// departments/run-build.js
+module.exports.manifest = {
+  inputs:  ["design-spec"],
+  outputs: ["build-artifact", "event:build-complete"],
+};
+```
+
+#### Profile edge schema addition
+
+Edges gain a `"carries"` field declaring what type flows through them:
+
+```json
+{ "from": "design", "to": "build", "type": "forward", "carries": "design-spec" }
+```
+
+#### Graph executor changes
+
+The executor resolves `context.inputs["design-spec"]` → actual file path via the type registry.
+Department runners stop hardcoding paths and read from `context.inputs[typeName]` instead.
+One source of truth for where every type lives.
+
+#### Why now
+
+Typed edges are the prerequisite for the visual graph editor's pin enforcement (Phase 9).
+Without manifests, the editor has no data to determine which connections are valid.
+
+---
+
+### Phase 9 — Visual Graph Editor (Drawflow)
+**Type:** New feature. GUI-first profile authoring.
+**Depends on:** Phase 8 (typed edges + manifests)
+
+Replace the current read-only graph preview with a fully interactive node canvas using
+[Drawflow](https://github.com/jerosoler/Drawflow) — a zero-dependency, CDN-includable node
+editor. The vision is Unreal Engine Blueprints: departments in a palette, drag onto canvas,
+connect typed pins. The JSON code view becomes a secondary export path and is on a long-term
+retirement track.
+
+#### Drawflow integration
+
+Single CDN include in `index.html`. The graph pane becomes a Drawflow canvas instance instead
+of the current HTML/CSS linear renderer.
+
+#### Translation layer
+
+Drawflow has its own internal serialization format. A translation layer handles both directions:
+- **Load**: profile JSON → Drawflow node/connection format → canvas render
+- **Save**: Drawflow canvas state → profile JSON (written to disk via `PUT /api/profiles/:name`)
+
+Visual layout (x/y node positions) stored in a `layout` block in the profile JSON.
+The graph executor ignores unknown keys — no behavioral impact.
+
+```json
+{
+  "id": "full",
+  "nodes": [...],
+  "edges": [...],
+  "layout": {
+    "design":   { "x": 80,  "y": 120 },
+    "build":    { "x": 320, "y": 120 },
+    "review":   { "x": 560, "y": 80  },
+    "security": { "x": 560, "y": 200 }
+  }
+}
+```
+
+#### Department palette
+
+Left sidebar inside the profiles view lists all registered departments (sourced from manifests).
+Drag a department card onto the canvas → Drawflow node appears with input/output pins drawn
+from the manifest's declared types.
+
+#### Typed pin colors + connection validation
+
+Each pin is colored by its type (same color per type across all nodes — like Blueprint sockets).
+Drawflow fires a connection event before completing a wire draw. The handler compares the source
+output type against the target input type; incompatible connections are rejected and the wire
+snaps back. This is purely frontend — no executor changes.
+
+#### Code view path
+
+Preview/Code toggle remains. Code view shows the profile JSON (with layout block stripped for
+readability). Code view is a debug/export tool — not the primary authoring path.
+
+---
+
 ## Evolution Concepts (Future Horizons)
 
 These are not scheduled. Documented here for context on why the above decisions were made the way
@@ -453,6 +569,8 @@ Phase 5   Second profile validation          low         after Phase 4
 Phase 5b  Upgrade pipeline                   deferred    after Phase 5, pending 6–7
 Phase 6   Memory wiki infrastructure         medium      after Phase 1
 Phase 7   Org chart / specialist brains      high        after Phase 6
+Phase 8   Typed edges + department manifests medium      after Phase 5
+Phase 9   Visual graph editor (Drawflow)     high        after Phase 8
 ```
 
 Phases 1–2 are cleanup. Phases 3–5 are the graph. Phases 6–7 are evolution features.

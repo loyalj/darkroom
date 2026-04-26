@@ -5,7 +5,7 @@
 // ---------------------------------------------------------------------------
 
 const state = {
-  activeView: "monitor",
+  activeView: "launch",
   activeRunId: null,
   manualRunId: null,   // set when user explicitly picks a run; blocks auto-detection
   logEvents: [],
@@ -31,6 +31,8 @@ const state = {
   memory: { data: null, activeDept: "design", activeTab: "wiki" },
   // Profiles
   profiles: { activeName: null, content: null, mode: "preview" },
+  // Department colors (loaded from /api/departments, shared across all views)
+  deptColors: {},
 };
 
 // ---------------------------------------------------------------------------
@@ -49,6 +51,7 @@ function setView(name) {
   $$(".nav-item").forEach((el) => el.classList.toggle("active", el.dataset.view === name));
   $$(".view").forEach((el) => el.classList.toggle("active", el.id === `view-${name}`));
   if (name === "browser") loadRunList();
+  if (name === "launch") initLaunchView();
   if (name === "profiles") loadProfiles();
   if (name === "memory") loadMemoryData();
 }
@@ -108,6 +111,28 @@ function tokensByPhase(entries) {
 // Pipeline bar
 // ---------------------------------------------------------------------------
 
+const PHASE_STEPS = {
+  design:   ["Functional Interview", "Experience Interview", "Consistency Check", "Spec Generation"],
+  build:    ["Architect Interview", "Building", "Copy Review", "Verification", "Packaging"],
+  review:   ["Running Scenarios", "Verdict"],
+  security: ["Running", "Verdict"],
+};
+
+function getPhaseStepIndex(phase, currentStep) {
+  if (!currentStep) return -1;
+  const dot = currentStep.indexOf(" · ");
+  if (dot === -1) return -1;
+  const stepPhase = currentStep.slice(0, dot).toLowerCase();
+  const rawStep   = currentStep.slice(dot + 3);
+  if (stepPhase !== phase) return -1;
+  if (["Complete", "Shipped", "Blocked", "Approved"].includes(rawStep)) return Infinity;
+  let normalized = rawStep;
+  if (phase === "build"  && rawStep.startsWith("Task "))     normalized = "Building";
+  if (phase === "review" && rawStep.startsWith("Scenario ")) normalized = "Running Scenarios";
+  if (phase === "design" && rawStep === "Clarification")     normalized = "Spec Generation";
+  return (PHASE_STEPS[phase] ?? []).indexOf(normalized);
+}
+
 function derivePhaseTimings(logEvents, profileNodes) {
   const timings = {};
   for (const ev of logEvents) {
@@ -148,13 +173,28 @@ function renderPipelineBar(pState) {
         const elapsed = Date.now() - new Date(t.startTs).getTime();
         timerHtml = `<div class="phase-timer phase-timer-active">${fmtDuration(elapsed)}</div>`;
       }
+    } else {
+      timerHtml = `<div class="phase-timer phase-timer-pending">0:00</div>`;
     }
+
+    const steps = PHASE_STEPS[key] ?? [];
+    const rawIndex = status === "active" ? getPhaseStepIndex(key, pState?.currentStep) : -1;
+    const allDone  = status === "done" || rawIndex === Infinity;
+    const stepIdx  = rawIndex === Infinity ? steps.length : rawIndex;
+
+    const segmentsHtml = steps.map((_, i) => {
+      let cls = "phase-segment";
+      if (allDone)              cls += " done";
+      else if (i < stepIdx)     cls += " done";
+      else if (i === stepIdx)   cls += " active";
+      return `<div class="${cls}"></div>`;
+    }).join("");
 
     const block = document.createElement("div");
     block.className = "phase-block";
     block.innerHTML = `
       <div class="phase-label ${status}">${label}</div>
-      <div class="phase-icon">${fmtPhaseIcon(status)}</div>
+      <div class="phase-segments">${segmentsHtml}</div>
       ${timerHtml}
     `;
     bar.appendChild(block);
@@ -176,12 +216,25 @@ function renderTokenTable(tokens) {
   const byPhase = tokensByPhase(tokens);
   const total = tokenTotal(tokens);
   const table = $("#token-table");
-  const rows = Object.entries(byPhase)
-    .map(([p, n]) => `<tr><td>${escHtml(p)}</td><td>${fmtTokens(n)}</td></tr>`)
-    .join("");
+
+  let rows;
+  if (Object.keys(byPhase).length > 0) {
+    rows = Object.entries(byPhase)
+      .map(([p, n]) => `<tr><td>${escHtml(p)}</td><td>${fmtTokens(n)}</td></tr>`)
+      .join("");
+  } else {
+    const placeholders = state.pipelineState?.profileNodes ?? ["design", "build", "review", "security"];
+    rows = placeholders
+      .map((p) => {
+        const label = p.charAt(0).toUpperCase() + p.slice(1);
+        return `<tr style="color: var(--subtle)"><td>${escHtml(label)}</td><td>0</td></tr>`;
+      })
+      .join("");
+  }
+
   table.innerHTML = `${rows}
     <tr class="token-total-row">
-      <td>Total</td><td>${fmtTokens(total)}</td>
+      <td>Total</td><td>${fmtTokens(total) || "0"}</td>
     </tr>`;
   renderBudgetBar(tokens);
 }
@@ -199,9 +252,7 @@ function renderBudgetBar(tokens) {
   bar.innerHTML = `
     <div class="budget-header">
       <span class="budget-label">Token Budget</span>
-      <span class="budget-nums">${fmtTokens(spent)} / ${fmtTokens(limit)} output
-        <span class="budget-source">(${escHtml(state.tokenLimitSource ?? "")})</span>
-      </span>
+      <span class="budget-nums">${fmtTokens(spent)} / ${fmtTokens(limit)}</span>
     </div>
     <div class="budget-track">
       <div class="budget-fill ${colorClass}" style="width:${pct}%"></div>
@@ -214,11 +265,23 @@ function renderBudgetBar(tokens) {
 // Decision feed
 // ---------------------------------------------------------------------------
 
+function ghostDecisionCards() {
+  const card = (titleW, lines) => `
+    <div class="decision-card decision-card-ghost">
+      <div class="ghost-bar" style="width:${titleW}%;height:10px;margin-bottom:4px;"></div>
+      <div class="ghost-bar" style="width:36px;height:15px;border-radius:3px;margin-bottom:4px;"></div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        ${lines.map(w => `<div class="ghost-bar" style="width:${w}%;height:8px;"></div>`).join("")}
+      </div>
+    </div>`;
+  return card(58, [100, 83, 91]) + card(47, [100, 72]) + card(63, [100, 88, 76]);
+}
+
 function renderDecisions(decisions) {
   const feed = $("#decision-feed");
   feed.innerHTML = "";
   if (decisions.length === 0) {
-    feed.innerHTML = `<div style="color: var(--muted); font-size: 12px;">No decisions yet.</div>`;
+    feed.innerHTML = ghostDecisionCards();
     return;
   }
   for (const d of [...decisions].reverse()) {
@@ -257,13 +320,12 @@ function renderMonitorHeader(runId, pState) {
 
 function renderTabStrip(categories) {
   const catRow = $("#category-row");
-  const fileRow = $("#file-row");
 
-  // Remove existing cat-btns (keep auto-btn)
   catRow.querySelectorAll(".cat-btn").forEach((el) => el.remove());
 
   if (!categories || categories.length === 0) {
-    fileRow.innerHTML = "";
+    $("#file-row").querySelectorAll(".tab-btn").forEach((el) => el.remove());
+    $("#auto-btn").hidden = true;
     return;
   }
 
@@ -273,8 +335,6 @@ function renderTabStrip(categories) {
     state.activeCategory = labels[0];
   }
 
-  // Render category pills before the auto-btn
-  const autoBtn = $("#auto-btn");
   for (const cat of categories) {
     const btn = document.createElement("button");
     btn.className = "cat-btn" + (cat.label === state.activeCategory ? " active" : "");
@@ -282,9 +342,8 @@ function renderTabStrip(categories) {
     btn.addEventListener("click", () => {
       state.activeCategory = cat.label;
       renderFileRow(categories);
-      // selecting a category doesn't pin — just navigation
     });
-    catRow.insertBefore(btn, autoBtn);
+    catRow.appendChild(btn);
   }
 
   renderFileRow(categories);
@@ -292,13 +351,19 @@ function renderTabStrip(categories) {
 
 function renderFileRow(categories) {
   const fileRow = $("#file-row");
-  fileRow.innerHTML = "";
+  const autoBtn = $("#auto-btn");
+
+  // Clear tab buttons but preserve the auto-btn DOM node
+  fileRow.querySelectorAll(".tab-btn").forEach((el) => el.remove());
 
   // Update active state on cat-btns
   $$(".cat-btn").forEach((btn) => btn.classList.toggle("active", btn.textContent === state.activeCategory));
 
   const cat = categories.find((c) => c.label === state.activeCategory);
-  if (!cat) return;
+  if (!cat) {
+    autoBtn.hidden = true;
+    return;
+  }
 
   for (const file of cat.files) {
     const tab = document.createElement("button");
@@ -310,8 +375,10 @@ function renderFileRow(categories) {
       updateAutoBtn();
       selectTab(file);
     });
-    fileRow.appendChild(tab);
+    fileRow.insertBefore(tab, autoBtn);
   }
+
+  autoBtn.hidden = state.activeCategory !== "Transcripts";
 }
 
 function updateAutoBtn() {
@@ -629,8 +696,8 @@ function showIdleState() {
 
   renderPipelineBar(null);
   $("#current-step").textContent = "Ready to monitor";
-  $("#token-table").innerHTML = `<tr><td colspan="2" style="color: var(--muted); padding: 4px 0;">No data yet</td></tr>`;
-  $("#decision-feed").innerHTML = `<div style="color: var(--muted); font-size: 12px;">No decisions yet.</div>`;
+  renderTokenTable([]);
+  $("#decision-feed").innerHTML = ghostDecisionCards();
 
   const catRow = $("#category-row");
   catRow.querySelectorAll(".cat-btn").forEach((el) => el.remove());
@@ -662,6 +729,274 @@ async function detectActiveRun() {
 }
 
 // ---------------------------------------------------------------------------
+// Launch view
+// ---------------------------------------------------------------------------
+
+const launchState = {
+  initialized: false,
+  profiles: [],
+  selectedProfile: null,
+  sourceRunId: null,
+  sourceRunRequired: false,
+  stopAfter: null,
+  mode: "manual",
+};
+
+function hexToRgba(hex, alpha) {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
+async function ensureDeptColors() {
+  if (Object.keys(state.deptColors).length) return;
+  try {
+    const res = await fetch("/api/departments");
+    const data = await res.json();
+    for (const [id, val] of Object.entries(data)) {
+      state.deptColors[id] = typeof val === "string" ? val : (val.color ?? "#888");
+    }
+  } catch { /* leave empty */ }
+}
+
+function nodeInlineStyle(id) {
+  const color = state.deptColors[id?.toLowerCase()];
+  if (!color) return "";
+  return `color:${color};background:${hexToRgba(color, 0.12)};border-color:${hexToRgba(color, 0.4)};`;
+}
+
+async function initLaunchView() {
+  if (launchState.initialized) return;
+  launchState.initialized = true;
+
+  $$("#view-launch .launch-mode-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $$("#view-launch .launch-mode-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      launchState.mode = btn.dataset.mode;
+    });
+  });
+
+  $("#launch-btn").addEventListener("click", handleLaunch);
+
+  try {
+    await ensureDeptColors();
+    const profilesRes = await fetch("/api/profiles");
+    launchState.profiles = await profilesRes.json();
+  } catch {
+    launchState.profiles = [];
+  }
+  renderLaunchProfileGrid();
+}
+
+function renderLaunchProfileGrid() {
+  const grid = $("#launch-profile-grid");
+  grid.innerHTML = "";
+  if (launchState.profiles.length === 0) {
+    grid.innerHTML = `<div style="color:var(--muted);font-size:12px;">No profiles found.</div>`;
+    return;
+  }
+  for (const profile of launchState.profiles) {
+    const card = document.createElement("div");
+    card.className = "profile-launch-card" + (launchState.selectedProfile === profile.name ? " selected" : "");
+    const pipelineHtml = (profile.nodes ?? []).map((n, i) =>
+      (i > 0 ? `<span class="profile-mini-arrow">›</span>` : "") +
+      `<span class="profile-mini-node" style="${nodeInlineStyle(n)}">${escHtml(n)}</span>`
+    ).join("");
+    card.innerHTML = `
+      <div class="profile-launch-card-name">${escHtml(profile.name)}</div>
+      ${profile.description ? `<div class="profile-launch-card-desc">${escHtml(profile.description)}</div>` : ""}
+      <div class="profile-mini-pipeline">${pipelineHtml}</div>
+    `;
+    card.addEventListener("click", () => selectLaunchProfile(profile));
+    grid.appendChild(card);
+  }
+}
+
+function selectLaunchProfile(profile) {
+  launchState.selectedProfile = profile.name;
+  launchState.stopAfter = null;
+  launchState.sourceRunId = null;
+  launchState.sourceRunRequired = profile.requiresRun ?? false;
+  renderLaunchProfileGrid();
+  renderStopAfterRail(profile.nodes ?? []);
+  updateLaunchButton();
+  populateSourceRunSelect();
+}
+
+function updateLaunchButton() {
+  const btn = $("#launch-btn");
+  if (!launchState.selectedProfile) {
+    btn.disabled = true;
+    btn.textContent = "Select a profile";
+  } else if (launchState.sourceRunRequired && !launchState.sourceRunId) {
+    btn.disabled = true;
+    btn.textContent = "Select a source run";
+  } else {
+    btn.disabled = false;
+    btn.textContent = "Launch Run";
+  }
+}
+
+async function populateSourceRunSelect() {
+  const profileName = launchState.selectedProfile;
+  const profile = launchState.profiles.find((p) => p.name === profileName);
+  const sourceSection = $("#launch-source-section");
+  const sel = $("#launch-source-select");
+
+  // Start hidden while loading to avoid a flash for profiles with no eligible runs
+  sourceSection.hidden = true;
+  launchState.sourceRunId = null;
+  updateLaunchButton();
+
+  let runs;
+  try {
+    const res = await fetch(`/api/runs/eligible?profile=${encodeURIComponent(profileName)}`);
+    runs = await res.json();
+  } catch {
+    runs = [];
+  }
+
+  // Profile may have changed while fetch was in flight — discard stale result
+  if (launchState.selectedProfile !== profileName) return;
+
+  const hint = $("#launch-source-hint");
+  if (hint) hint.textContent = profile?.requiresRun ? "— required to continue from existing artifacts" : "— optional: continue from an existing run or leave blank to start fresh";
+
+  if (!runs.length) {
+    if (profile?.requiresRun) {
+      // Required but nothing available — show disabled dropdown, block launch
+      sel.innerHTML = `<option value="">No eligible runs found</option>`;
+      sel.disabled = true;
+      sourceSection.hidden = false;
+    }
+    // Optional and nothing available — keep section hidden, launch fresh
+  } else {
+    const placeholder = profile?.requiresRun ? "Select a run…" : "Select a run (optional)…";
+    sel.innerHTML = `<option value="">${placeholder}</option>` +
+      runs.map((r) => {
+        const parts = [r.id.slice(0, 8), r.tag, r.profile, r.verdict].filter(Boolean);
+        return `<option value="${escHtml(r.id)}">${escHtml(parts.join(" · "))}</option>`;
+      }).join("");
+    sel.disabled = false;
+    sel.onchange = () => {
+      launchState.sourceRunId = sel.value || null;
+      updateLaunchButton();
+    };
+    sourceSection.hidden = false;
+  }
+
+  updateLaunchButton();
+}
+
+function renderStopAfterRail(nodes) {
+  const section = $("#launch-stopafter-section");
+  const rail = $("#launch-stopafter-rail");
+  section.hidden = nodes.length === 0;
+  rail.innerHTML = "";
+  for (const node of nodes) {
+    const btn = document.createElement("button");
+    btn.className = "sa-node";
+    btn.setAttribute("style", nodeInlineStyle(node));
+    btn.textContent = node;
+    btn.dataset.node = node;
+    updateSaNodeClass(btn, node, nodes);
+    btn.addEventListener("click", () => {
+      launchState.stopAfter = launchState.stopAfter === node ? null : node;
+      rail.querySelectorAll(".sa-node").forEach((b) => updateSaNodeClass(b, b.dataset.node, nodes));
+    });
+    rail.appendChild(btn);
+  }
+}
+
+function updateSaNodeClass(btn, node, nodes) {
+  // When nothing is selected, treat as "run all" — all nodes appear included
+  const cutoffIdx = launchState.stopAfter ? nodes.indexOf(launchState.stopAfter) : nodes.length - 1;
+  const nodeIdx = nodes.indexOf(node);
+  btn.classList.remove("included", "excluded");
+  if (nodeIdx <= cutoffIdx) btn.classList.add("included");
+  else btn.classList.add("excluded");
+}
+
+
+async function handleLaunch() {
+  if (!launchState.selectedProfile) return;
+  const btn = $("#launch-btn");
+  const errorEl = $("#launch-error");
+  btn.disabled = true;
+  btn.textContent = "Launching…";
+  errorEl.textContent = "";
+
+  const tag = $("#launch-tag").value.trim();
+  const body = {
+    profile: launchState.selectedProfile,
+    mode: launchState.mode,
+    caveman: $("#launch-caveman").checked,
+    ...(tag && { tag }),
+    ...(launchState.stopAfter && { stopAfter: launchState.stopAfter }),
+    ...(launchState.sourceRunId && { runId: launchState.sourceRunId }),
+  };
+
+  try {
+    const res = await fetch("/api/launch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error ?? "Launch failed");
+
+    // Reset form state
+    launchState.selectedProfile = null;
+    launchState.stopAfter = null;
+    launchState.sourceRunId = null;
+    launchState.sourceRunRequired = false;
+    renderLaunchProfileGrid();
+    $("#launch-stopafter-section").hidden = true;
+    $("#launch-source-section").hidden = true;
+    $("#launch-tag").value = "";
+    updateLaunchButton();
+
+    setTimeout(() => {
+      state.manualRunId = data.runId;
+      connectRun(data.runId);
+      setView("monitor");
+    }, 800);
+  } catch (e) {
+    errorEl.textContent = e.message;
+    btn.disabled = false;
+    btn.textContent = "Launch Run";
+  }
+}
+
+async function handleResume(run, btn) {
+  btn.disabled = true;
+  btn.textContent = "Resuming…";
+  try {
+    const res = await fetch("/api/launch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runId: run.id, mode: launchState.mode, caveman: true }),
+    });
+    if (res.status === 409) {
+      btn.disabled = false;
+      btn.textContent = "Already running";
+      return;
+    }
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error ?? "Resume failed");
+    setTimeout(() => {
+      state.manualRunId = data.runId;
+      connectRun(data.runId);
+      setView("monitor");
+    }, 800);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Resume";
+    $("#launch-error") && ($("#launch-error").textContent = e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Run browser
 // ---------------------------------------------------------------------------
 
@@ -690,13 +1025,23 @@ async function loadRunList() {
   for (const run of runs) {
     const row = document.createElement("div");
     row.className = "run-row";
+    const isIncomplete = run.verdict === "running";
+    const isLive = run.alive === true;
     row.innerHTML = `
       <span class="verdict-pill ${run.verdict ?? "running"}">${run.verdict ?? "running"}</span>
       <span class="run-id">${run.id.slice(0, 8)}</span>
       ${run.tag ? `<span class="tag-badge">${escHtml(run.tag)}</span>` : ""}
+      <span class="run-profile-badge">${escHtml(run.profile ?? "full")}</span>
       <span class="run-tokens">${fmtTokens(run.totalTokens ?? 0)}</span>
       <span class="run-ts">${fmtTs(run.startTs)}</span>
+      ${isLive ? `<span class="live-pill">● Live</span>` : (isIncomplete ? `<button class="resume-btn">Resume</button>` : "")}
     `;
+    if (!isLive && isIncomplete) {
+      row.querySelector(".resume-btn").addEventListener("click", function (e) {
+        e.stopPropagation();
+        handleResume(run, this);
+      });
+    }
     row.addEventListener("click", () => {
       state.manualRunId = run.id;
       connectRun(run.id);
@@ -812,6 +1157,7 @@ function setProfilesMode(mode) {
 async function loadProfiles() {
   const sidebar = $("#profiles-sidebar");
   sidebar.innerHTML = `<div style="color: var(--muted); padding: 12px 14px; font-size: 12px;">Loading…</div>`;
+  await ensureDeptColors();
   try {
     const res = await fetch("/api/profiles");
     const profiles = await res.json();
@@ -946,8 +1292,10 @@ function renderProfileGraph(jsonText) {
 
     // ID line
     const idEl = document.createElement("div");
-    idEl.className = `graph-node-id ${escHtml(node.id ?? "")}`;
+    idEl.className = "graph-node-id";
     idEl.textContent = node.id ?? "?";
+    const deptColor = state.deptColors[(node.id ?? "").toLowerCase()];
+    if (deptColor) idEl.style.color = deptColor;
     card.appendChild(idEl);
 
     // Runner filename
@@ -1205,7 +1553,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#memory-refresh-btn").addEventListener("click", loadMemoryData);
 
-  setView("monitor");
+  // Collapsible sections
+  $$(".section-title").forEach((title) => {
+    title.addEventListener("click", () => title.closest(".section").classList.toggle("collapsed"));
+  });
+
+  setView("launch");
   detectActiveRun();
   setInterval(detectActiveRun, 3000);
 });

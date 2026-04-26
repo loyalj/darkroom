@@ -1,6 +1,7 @@
 {
   "id": "lean",
   "name": "Lean Pipeline (no Security)",
+  "description": "Design, build, and review without the security audit step.",
   "nodes": [
     {
       "id": "design",

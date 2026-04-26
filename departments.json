@@ -1,0 +1,22 @@
+{
+  "design": {
+    "color": "#c792ea",
+    "inputs": [],
+    "outputs": ["handoff/build-spec.md"]
+  },
+  "build": {
+    "color": "#58a6ff",
+    "inputs": ["handoff/build-spec.md"],
+    "outputs": ["artifact/MANIFEST.txt"]
+  },
+  "review": {
+    "color": "#e3b341",
+    "inputs": ["artifact/MANIFEST.txt"],
+    "outputs": ["review/verdict-report.md"]
+  },
+  "security": {
+    "color": "#3fb950",
+    "inputs": ["artifact/MANIFEST.txt"],
+    "outputs": ["security/security-verdict-report.md"]
+  }
+}

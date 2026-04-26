@@ -34,6 +34,7 @@ function claudeRaw(args, input) {
     input,
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
+    windowsHide: true,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(result.stderr || `claude exited with status ${result.status}`);
@@ -79,7 +80,7 @@ function claudeToolCall(appendSystemPrompt, userMessage, cwd) {
   const result = spawnSync(
     "claude",
     ["-p", "--dangerously-skip-permissions", "--append-system-prompt", appendSystemPrompt],
-    { input: userMessage, encoding: "utf8", maxBuffer: 50 * 1024 * 1024, cwd }
+    { input: userMessage, encoding: "utf8", maxBuffer: 50 * 1024 * 1024, cwd, windowsHide: true }
   );
   if (result.error) throw result.error;
   return result.stdout.trim();
@@ -92,7 +93,7 @@ function claudeToolCallAsync(appendSystemPrompt, userMessage, cwd, onUsage) {
       "claude",
       ["-p", "--dangerously-skip-permissions", "--append-system-prompt", appendSystemPrompt,
        "--output-format", "json"],
-      { cwd, stdio: ["pipe", "pipe", "pipe"] }
+      { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true }
     );
 
     proc.stdin.write(userMessage, "utf8");

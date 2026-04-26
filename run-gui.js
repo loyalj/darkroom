@@ -16,6 +16,10 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const { spawn } = require("child_process");
+const crypto = require("crypto");
+
+const activeProcesses = new Map(); // runId → pid
 
 const RUNS_DIR = path.join(__dirname, "runs");
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -27,6 +31,40 @@ const PORT = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 4242;
 const app = express();
 app.use(express.static(PUBLIC_DIR));
 app.use(express.json());
+
+// ---------------------------------------------------------------------------
+// Process tracking helpers
+// ---------------------------------------------------------------------------
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function pidFilePath(runId) { return path.join(RUNS_DIR, runId, "run.pid"); }
+
+function writePidFile(runId, pid) {
+  try { fs.writeFileSync(pidFilePath(runId), String(pid), "utf8"); } catch {}
+}
+
+function removePidFile(runId) {
+  try { fs.unlinkSync(pidFilePath(runId)); } catch {}
+}
+
+function readPidFile(runId) {
+  try {
+    const pid = parseInt(fs.readFileSync(pidFilePath(runId), "utf8").trim(), 10);
+    return isNaN(pid) ? null : pid;
+  } catch { return null; }
+}
+
+// On startup, restore any processes that were alive when the server last ran.
+function recoverActiveProcesses() {
+  for (const id of allRunIds()) {
+    const pid = readPidFile(id);
+    if (pid == null) continue;
+    if (isAlive(pid)) { activeProcesses.set(id, pid); } else { removePidFile(id); }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Data helpers
@@ -82,6 +120,7 @@ function runSummary(id) {
   const meta = runMeta(dir);
 
   const startEvent = logEvents.find((e) => e.phase === "factory" && e.event === "start");
+  const profileName = startEvent?.profile ?? "full";
   const lastEvent = logEvents[logEvents.length - 1];
   const complete = logEvents.some((e) => e.event === "pipeline-complete");
   const shipped = logEvents.some((e) => e.event === "ship-approved" || e.event === "ship-approved-override");
@@ -100,15 +139,20 @@ function runSummary(id) {
   const totalTokens = tokens.reduce((s, t) => s + (t.input || 0) + (t.output || 0), 0);
   const totalMs = times.reduce((s, t) => s + (t.durationMs || 0), 0);
 
+  const pid = activeProcesses.get(id) ?? readPidFile(id);
+  const alive = pid != null && isAlive(pid);
+
   return {
     id,
     tag: meta?.tag ?? null,
+    profile: profileName,
     startTs: startEvent?.ts ?? lastEvent?.ts ?? null,
     verdict,
     totalTokens,
     totalMs,
     eventCount: logEvents.length,
     lastEvent: lastEvent ?? null,
+    alive,
   };
 }
 
@@ -355,6 +399,66 @@ app.get("/api/runs", (req, res) => {
   res.json(runs);
 });
 
+// Returns runs eligible as a source for a given requiresRun profile.
+// A run is eligible when, for every department node in the profile:
+//   - all of that department's declared inputs are present on disk (prerequisites met)
+//   - at least one declared output is absent (there is still work to do)
+// Alive runs are always excluded.
+app.get("/api/runs/eligible", (req, res) => {
+  const profileName = req.query.profile;
+  if (!profileName || !/^[\w-]+$/.test(profileName)) {
+    return res.status(400).json({ error: "profile required" });
+  }
+
+  const profilePath = path.join(__dirname, "profiles", `${profileName}.json`);
+  if (!fs.existsSync(profilePath)) return res.status(404).json({ error: "profile not found" });
+
+  let profile, depts;
+  try {
+    profile = JSON.parse(fs.readFileSync(profilePath, "utf8"));
+    depts   = JSON.parse(fs.readFileSync(path.join(__dirname, "departments.json"), "utf8"));
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+
+  const eligible = [];
+
+  for (const id of allRunIds()) {
+    const runDir = path.join(RUNS_DIR, id);
+
+    // Exclude runs with a live process
+    const pid = activeProcesses.get(id) ?? readPidFile(id);
+    if (pid != null && isAlive(pid)) continue;
+
+    let allInputsPresent = true;
+    let anyOutputMissing = false;
+
+    for (const node of profile.nodes) {
+      const dept = depts[node.id];
+      if (!dept) continue;
+
+      const inputs  = dept.inputs  ?? [];
+      const outputs = dept.outputs ?? [];
+
+      if (!inputs.every((rel) => fs.existsSync(path.join(runDir, rel)))) {
+        allInputsPresent = false;
+        break;
+      }
+
+      if (outputs.some((rel) => !fs.existsSync(path.join(runDir, rel)))) {
+        anyOutputMissing = true;
+      }
+    }
+
+    if (allInputsPresent && anyOutputMissing) {
+      try { eligible.push(runSummary(id)); } catch {}
+    }
+  }
+
+  eligible.sort((a, b) => (b.startTs ?? "").localeCompare(a.startTs ?? ""));
+  res.json(eligible);
+});
+
 app.get("/api/runs/:id", (req, res) => {
   const { id } = req.params;
   const dir = path.join(RUNS_DIR, id);
@@ -559,9 +663,9 @@ app.get("/api/profiles", (req, res) => {
       const name = f.replace(/\.json$/, "");
       try {
         const profile = JSON.parse(fs.readFileSync(path.join(profilesDir, f), "utf8"));
-        return { name, nodeCount: profile.nodes?.length ?? 0 };
+        return { name, description: profile.description ?? "", requiresRun: profile.requiresRun ?? false, nodeCount: profile.nodes?.length ?? 0, nodes: profile.nodes?.map((n) => n.id) ?? [] };
       } catch {
-        return { name, nodeCount: 0, error: true };
+        return { name, nodeCount: 0, nodes: [], error: true };
       }
     });
   res.json(files);
@@ -596,6 +700,64 @@ app.put("/api/profiles/:name", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Departments
+// ---------------------------------------------------------------------------
+
+app.get("/api/departments", (req, res) => {
+  const p = path.join(__dirname, "departments.json");
+  if (!fs.existsSync(p)) return res.json({});
+  try { res.json(JSON.parse(fs.readFileSync(p, "utf8"))); }
+  catch { res.json({}); }
+});
+
+// ---------------------------------------------------------------------------
+// Launch
+// ---------------------------------------------------------------------------
+
+app.post("/api/launch", (req, res) => {
+  const { profile, mode = "manual", tag, caveman, stopAfter, runId: resumeId } = req.body ?? {};
+  const runId = resumeId ?? crypto.randomBytes(4).toString("hex");
+
+  // Prevent two processes running against the same run directory
+  const existingPid = activeProcesses.get(runId) ?? readPidFile(runId);
+  if (existingPid != null && isAlive(existingPid)) {
+    return res.status(409).json({ error: "Run is already in progress", runId });
+  }
+
+  const args = [path.join(__dirname, "run-factory.js"), "--run-id", runId];
+
+  // Always pass --profile when provided; for plain resume (no profile) let factory infer from existing state
+  const resolvedProfile = profile ?? (resumeId ? null : "full");
+  if (resolvedProfile) args.push("--profile", resolvedProfile);
+
+  if (!resumeId) {
+    if (tag) args.push("--tag", tag);
+    if (stopAfter) args.push("--stop-after", stopAfter);
+  }
+  if (mode === "auto") args.push("--mode", "auto");
+  if (caveman) args.push("--caveman");
+
+  try {
+    const child = spawn(process.execPath, args, {
+      cwd: __dirname,
+      env: { ...process.env, DARK_ROOM_IO: "file" },
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    activeProcesses.set(runId, child.pid);
+    writePidFile(runId, child.pid);
+    child.on("exit", () => {
+      activeProcesses.delete(runId);
+      removePidFile(runId);
+    });
+    child.unref();
+    res.json({ ok: true, runId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
 
@@ -617,6 +779,8 @@ app.get("/api/memory", (req, res) => {
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
+
+recoverActiveProcesses();
 
 app.listen(PORT, () => {
   console.log(`\nSoftware Factory — GUI`);

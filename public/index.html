@@ -17,7 +17,8 @@
         <button id="sidebar-toggle" title="Collapse sidebar">‹</button>
       </div>
       <div id="sidebar-nav">
-        <div class="nav-item active" data-view="monitor">Run Viewer</div>
+        <div class="nav-item active" data-view="launch">Launch Run</div>
+        <div class="nav-item" data-view="monitor">Run Viewer</div>
         <div class="nav-item" data-view="browser">Run Browser</div>
         <div class="nav-item" data-view="profiles">Factory Profiles</div>
         <div class="nav-item" data-view="memory">Factory Memory</div>
@@ -37,10 +38,10 @@
 
         <!-- Pipeline progress bar -->
         <div id="pipeline-bar">
-          <div class="phase-block"><div class="phase-label">Design</div><div class="phase-icon">○</div></div>
-          <div class="phase-block"><div class="phase-label">Build</div><div class="phase-icon">○</div></div>
-          <div class="phase-block"><div class="phase-label">Review</div><div class="phase-icon">○</div></div>
-          <div class="phase-block"><div class="phase-label">Security</div><div class="phase-icon">○</div></div>
+          <div class="phase-block"><div class="phase-label">Design</div><div class="phase-segments"><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div></div><div class="phase-timer phase-timer-pending">0:00</div></div>
+          <div class="phase-block"><div class="phase-label">Build</div><div class="phase-segments"><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div></div><div class="phase-timer phase-timer-pending">0:00</div></div>
+          <div class="phase-block"><div class="phase-label">Review</div><div class="phase-segments"><div class="phase-segment"></div><div class="phase-segment"></div></div><div class="phase-timer phase-timer-pending">0:00</div></div>
+          <div class="phase-block"><div class="phase-label">Security</div><div class="phase-segments"><div class="phase-segment"></div><div class="phase-segment"></div></div><div class="phase-timer phase-timer-pending">0:00</div></div>
         </div>
 
         <!-- Monitor body: left column + document viewer -->
@@ -58,7 +59,11 @@
             <div class="section">
               <div class="section-title">Token Usage</div>
               <table id="token-table">
-                <tr><td colspan="2" style="color: var(--muted); padding: 4px 0;">No data yet</td></tr>
+                <tr style="color: var(--subtle)"><td>Design</td><td>0</td></tr>
+                <tr style="color: var(--subtle)"><td>Build</td><td>0</td></tr>
+                <tr style="color: var(--subtle)"><td>Review</td><td>0</td></tr>
+                <tr style="color: var(--subtle)"><td>Security</td><td>0</td></tr>
+                <tr class="token-total-row"><td>Total</td><td>0</td></tr>
               </table>
               <div id="budget-bar"></div>
             </div>
@@ -66,7 +71,32 @@
             <div class="section" style="flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom: none;">
               <div class="section-title">Brain Decisions</div>
               <div id="decision-feed">
-                <div style="color: var(--muted); font-size: 12px;">No decisions yet.</div>
+                <div class="decision-card decision-card-ghost">
+                  <div class="ghost-bar" style="width:58%;height:10px;margin-bottom:4px;"></div>
+                  <div class="ghost-bar" style="width:36px;height:15px;border-radius:3px;margin-bottom:4px;"></div>
+                  <div style="display:flex;flex-direction:column;gap:4px;">
+                    <div class="ghost-bar" style="width:100%;height:8px;"></div>
+                    <div class="ghost-bar" style="width:83%;height:8px;"></div>
+                    <div class="ghost-bar" style="width:91%;height:8px;"></div>
+                  </div>
+                </div>
+                <div class="decision-card decision-card-ghost">
+                  <div class="ghost-bar" style="width:47%;height:10px;margin-bottom:4px;"></div>
+                  <div class="ghost-bar" style="width:36px;height:15px;border-radius:3px;margin-bottom:4px;"></div>
+                  <div style="display:flex;flex-direction:column;gap:4px;">
+                    <div class="ghost-bar" style="width:100%;height:8px;"></div>
+                    <div class="ghost-bar" style="width:72%;height:8px;"></div>
+                  </div>
+                </div>
+                <div class="decision-card decision-card-ghost">
+                  <div class="ghost-bar" style="width:63%;height:10px;margin-bottom:4px;"></div>
+                  <div class="ghost-bar" style="width:36px;height:15px;border-radius:3px;margin-bottom:4px;"></div>
+                  <div style="display:flex;flex-direction:column;gap:4px;">
+                    <div class="ghost-bar" style="width:100%;height:8px;"></div>
+                    <div class="ghost-bar" style="width:88%;height:8px;"></div>
+                    <div class="ghost-bar" style="width:76%;height:8px;"></div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -74,16 +104,12 @@
           <!-- Document viewer: tab strip + content -->
           <div id="monitor-right">
             <div id="tab-strip">
-              <div id="category-row">
-                <button id="auto-btn" class="auto-active" title="Auto-follow active transcript">Auto</button>
-              </div>
-              <div id="file-row"></div>
-            </div>
-            <div id="doc-body">
-              <div class="empty-state">
-                <span>Select a run to view documents</span>
+              <div id="category-row"></div>
+              <div id="file-row">
+                <button id="auto-btn" class="auto-active" title="Auto-follow active transcript" hidden>Auto</button>
               </div>
             </div>
+            <div id="doc-body"></div>
             <div id="chat-pane" class="idle">
               <div id="chat-resize"></div>
               <div id="chat-inner">
@@ -109,6 +135,56 @@
         <div id="run-list-body">
           <div style="color: var(--muted); padding: 20px;">Loading…</div>
         </div>
+      </div>
+
+      <!-- ── Launch ── -->
+      <div id="view-launch" class="view">
+        <div class="panel-header">
+          <h2>Launch Run</h2>
+        </div>
+        <!-- New Run pane -->
+        <div id="launch-new" class="launch-pane">
+          <div class="launch-section">
+            <div class="launch-section-label">Profile</div>
+            <div id="launch-profile-grid"><div style="color:var(--muted);font-size:12px;">Loading…</div></div>
+          </div>
+          <div class="launch-section" id="launch-source-section" hidden>
+            <div class="launch-section-label">Source Run <span class="launch-section-hint" id="launch-source-hint">— continue from this run's artifacts</span></div>
+            <select id="launch-source-select" class="launch-source-select"></select>
+          </div>
+          <div class="launch-section" id="launch-stopafter-section" hidden>
+            <div class="launch-section-label">Run through <span class="launch-section-hint">— click a phase to stop after it</span></div>
+            <div id="launch-stopafter-rail"></div>
+          </div>
+          <div class="launch-section">
+            <div class="launch-section-label">Options</div>
+            <div class="launch-options-row">
+              <div class="launch-option">
+                <span class="launch-option-label">Mode</span>
+                <div class="launch-mode-toggle">
+                  <button class="launch-mode-btn active" data-mode="manual">Manual</button>
+                  <button class="launch-mode-btn" data-mode="auto">Auto</button>
+                </div>
+              </div>
+              <div class="launch-option">
+                <span class="launch-option-label">Caveman</span>
+                <label class="launch-toggle-wrap">
+                  <input type="checkbox" id="launch-caveman" checked>
+                  <span class="launch-toggle-track"><span class="launch-toggle-thumb"></span></span>
+                </label>
+              </div>
+              <div class="launch-option">
+                <span class="launch-option-label">Tag</span>
+                <input type="text" id="launch-tag" placeholder="optional label…" class="launch-tag-input">
+              </div>
+            </div>
+          </div>
+          <div class="launch-footer">
+            <button id="launch-btn" class="launch-btn" disabled>Select a profile</button>
+            <div id="launch-error" class="launch-error"></div>
+          </div>
+        </div>
+
       </div>
 
       <!-- ── Profiles ── -->

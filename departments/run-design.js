@@ -91,7 +91,14 @@ async function runInterviewPhase(io, display, agentPromptPath, systemContext, tr
     appendTranscript(transcriptPath, "Agent", agentTurn);
     conversationHistory.push({ role: "assistant", content: agentTurn });
 
-    if (agentTurn.includes(completionSignal)) {
+    if (agentTurn.toLowerCase().includes(completionSignal.toLowerCase())) {
+      break;
+    }
+
+    // Fallback: agent broke protocol and emitted a JSON envelope — treat as completion
+    const trimmed = agentTurn.trim();
+    if (trimmed.startsWith("{") && trimmed.includes('"status"')) {
+      appendTranscript(transcriptPath, "System", "(Interview concluded — agent produced structured output instead of completion signal.)");
       break;
     }
   }
@@ -125,6 +132,8 @@ async function main() {
   const args = process.argv.slice(2);
   const resumeIndex = args.indexOf("--run-id");
   const id = resumeIndex >= 0 ? args[resumeIndex + 1] : runId();
+  const modeIndex = args.indexOf("--mode");
+  const runMode = modeIndex >= 0 ? args[modeIndex + 1] : "manual";
   const runDir = path.join(RUNS_DIR, id);
   setRunDir(runDir);
   const io = process.env.DARK_ROOM_IO === "file"
@@ -215,6 +224,10 @@ async function main() {
     if (issuesFound.length === 0) {
       ticker.done("no issues found");
       writeFile(clarificationTranscriptPath, `# Clarification Transcript\n\n(No issues found — clarification round skipped)\n`);
+    } else if (runMode === "auto") {
+      ticker.done(`${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} found — skipped in auto mode`);
+      writeFile(clarificationTranscriptPath, `# Clarification Transcript\n\n(${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} found — clarification skipped in auto mode, proceeding with best-effort spec generation)\n`);
+      logEvent(runDir, { phase: "design", event: "clarification-round-skipped", issueCount: issuesFound.length });
     } else {
       ticker.done(`${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} found`);
       writeFile(clarificationTranscriptPath, `# Clarification Transcript\n`);
