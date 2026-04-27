@@ -19,9 +19,13 @@ const path = require("path");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
 
-const activeProcesses = new Map(); // runId → pid
+const org = require("./lib/org");
 
-const RUNS_DIR = path.join(__dirname, "runs");
+const activeProcesses  = new Map(); // runId → pid (factory runs only)
+const activeHrSession  = { runId: null, pid: null, type: null, roleId: null };
+
+const RUNS_DIR         = path.join(__dirname, "runs");
+const HR_SESSIONS_DIR  = path.join(__dirname, "org", "sessions");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 const args = process.argv.slice(2);
@@ -67,6 +71,53 @@ function recoverActiveProcesses() {
 }
 
 // ---------------------------------------------------------------------------
+// HR session tracking helpers
+// ---------------------------------------------------------------------------
+
+function hrPidFilePath(runId) { return path.join(HR_SESSIONS_DIR, runId, "run.pid"); }
+
+function writeHrPidFile(runId, pid) {
+  try { fs.writeFileSync(hrPidFilePath(runId), String(pid), "utf8"); } catch {}
+}
+
+function removeHrPidFile(runId) {
+  try { fs.unlinkSync(hrPidFilePath(runId)); } catch {}
+}
+
+function readHrPidFile(runId) {
+  try {
+    const pid = parseInt(fs.readFileSync(hrPidFilePath(runId), "utf8").trim(), 10);
+    return isNaN(pid) ? null : pid;
+  } catch { return null; }
+}
+
+function clearHrSession() {
+  activeHrSession.runId = null;
+  activeHrSession.pid   = null;
+  activeHrSession.type  = null;
+  activeHrSession.roleId = null;
+}
+
+function recoverHrSession() {
+  if (!fs.existsSync(HR_SESSIONS_DIR)) return;
+  for (const entry of fs.readdirSync(HR_SESSIONS_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const id  = entry.name;
+    const pid = readHrPidFile(id);
+    if (pid == null) continue;
+    if (!isAlive(pid)) { removeHrPidFile(id); continue; }
+    const events    = parseJsonLines(path.join(HR_SESSIONS_DIR, id, "log.jsonl"));
+    const designEv  = events.find((e) => e.event === "role-design-start");
+    const interviewEv = events.find((e) => e.event === "interview-start");
+    activeHrSession.runId  = id;
+    activeHrSession.pid    = pid;
+    activeHrSession.type   = designEv ? "create-role" : "interview";
+    activeHrSession.roleId = interviewEv?.role ?? null;
+    break; // only one HR session at a time
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Data helpers
 // ---------------------------------------------------------------------------
 
@@ -103,11 +154,8 @@ function readBudgetLimit(dir) {
     }
   } catch {}
   try {
-    const brainCfg = path.join(__dirname, "org/ceo/brain-config.json");
-    if (fs.existsSync(brainCfg)) {
-      const cfg = JSON.parse(fs.readFileSync(brainCfg, "utf8"));
-      if (cfg.tokenLimitPerRun != null) return { limit: cfg.tokenLimitPerRun, source: "global brain" };
-    }
+    const tokenLimit = org.readConfigValue("tokenLimitPerRun");
+    if (tokenLimit != null) return { limit: tokenLimit, source: "global brain" };
   } catch {}
   return { limit: null, source: null };
 }
@@ -260,9 +308,13 @@ function deriveState(logEvents) {
   for (const ev of logEvents) {
     const { phase, event: e } = ev;
 
-    if (phase === "leadership") {
-      if (e === "brain-interview-start") currentStep = "Leadership · Brain Interview";
-      else if (e === "run-brain-start") currentStep = "Leadership · Run Brain";
+    if (phase === "hr") {
+      if (e === "role-design-start") currentStep = "HR · Role Design";
+      else if (e === "role-design-complete") currentStep = `HR · Role Created (${ev.role ?? ""})`;
+      else if (e === "interview-start") currentStep = `HR · ${ev.role ?? "Role"} Interview`;
+      else if (e === "interview-complete") currentStep = `HR · ${ev.role ?? "Role"} Brain Complete`;
+    } else if (phase === "leadership") {
+      if (e === "run-brain-start") currentStep = "Leadership · Run Brain";
     } else if (phase === "design") {
       if (phases.design === "pending") phases.design = "active";
       if (e === "start") { phases.design = "active"; currentStep = "Design · Functional Interview"; }
@@ -758,6 +810,221 @@ app.post("/api/launch", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Roles
+// ---------------------------------------------------------------------------
+
+app.get("/api/roles", (req, res) => {
+  try {
+    org.reloadAll();
+    const roles = org.loadRoles();
+    const result = Object.values(roles).map((role) => ({
+      id:          role.id,
+      name:        role.name,
+      description: role.description,
+      hasBrain:    org.brainExists(role),
+      brainContent: org.brainExists(role) ? org.readBrain(role) : null,
+    }));
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Org chart
+// ---------------------------------------------------------------------------
+
+function spawnHrSession(spawnArgs, runId, type, roleId, res) {
+  const sessionDir = path.join(HR_SESSIONS_DIR, runId);
+  fs.mkdirSync(sessionDir, { recursive: true });
+  try {
+    const child = spawn(process.execPath, spawnArgs, {
+      cwd: __dirname,
+      env: { ...process.env, DARK_ROOM_IO: "file" },
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    activeHrSession.runId  = runId;
+    activeHrSession.pid    = child.pid;
+    activeHrSession.type   = type;
+    activeHrSession.roleId = roleId;
+    writeHrPidFile(runId, child.pid);
+    child.on("exit", () => { removeHrPidFile(runId); clearHrSession(); });
+    child.unref();
+    res.json({ ok: true, runId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+app.post("/api/org/roles/create", (req, res) => {
+  if (activeHrSession.runId && activeHrSession.pid && isAlive(activeHrSession.pid))
+    return res.status(409).json({ error: "An HR session is already running", runId: activeHrSession.runId });
+
+  const runId = crypto.randomBytes(4).toString("hex");
+  spawnHrSession(
+    [path.join(__dirname, "run-hr.js"), "--create-role", "--run-id", runId],
+    runId, "create-role", null, res
+  );
+});
+
+app.post("/api/org/:id/interview", (req, res) => {
+  const { id } = req.params;
+  if (!/^[\w-]+$/.test(id)) return res.status(400).json({ error: "invalid role id" });
+
+  if (activeHrSession.runId && activeHrSession.pid && isAlive(activeHrSession.pid))
+    return res.status(409).json({ error: "An HR session is already running", runId: activeHrSession.runId });
+
+  org.reloadAll();
+  const roles = org.loadRoles();
+  if (!roles[id]) return res.status(404).json({ error: "role not found" });
+
+  const runId = crypto.randomBytes(4).toString("hex");
+  spawnHrSession(
+    [path.join(__dirname, "run-hr.js"), "--role", id, "--run-id", runId],
+    runId, "interview", id, res
+  );
+});
+
+app.get("/api/org/session", (req, res) => {
+  if (!activeHrSession.runId || !activeHrSession.pid || !isAlive(activeHrSession.pid))
+    return res.json({ active: false });
+
+  const { runId, type, roleId } = activeHrSession;
+  const dir = path.join(HR_SESSIONS_DIR, runId);
+
+  const pendingPath = path.join(dir, "pending-input.json");
+  let pendingInput = null;
+  if (fs.existsSync(pendingPath)) {
+    try { pendingInput = JSON.parse(fs.readFileSync(pendingPath, "utf8")); } catch {}
+  }
+
+  res.json({ active: true, runId, type, roleId, pendingInput });
+});
+
+app.delete("/api/org/session", (req, res) => {
+  if (!activeHrSession.runId) return res.json({ ok: true });
+  const { pid, runId } = activeHrSession;
+  if (pid && isAlive(pid)) { try { process.kill(pid, "SIGTERM"); } catch {} }
+  removeHrPidFile(runId);
+  clearHrSession();
+  res.json({ ok: true });
+});
+
+app.post("/api/hr-session/:id/respond", (req, res) => {
+  const { id } = req.params;
+  const { response } = req.body ?? {};
+  if (typeof response !== "string") return res.status(400).json({ error: "response required" });
+
+  const dir = path.join(HR_SESSIONS_DIR, id);
+  if (!fs.existsSync(dir)) return res.status(404).json({ error: "not found" });
+
+  try {
+    fs.writeFileSync(path.join(dir, "input-response.json"), JSON.stringify({ response }), "utf8");
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/hr-session/:id/stream", (req, res) => {
+  const { id } = req.params;
+  const dir = path.join(HR_SESSIONS_DIR, id);
+  if (!fs.existsSync(dir)) return res.status(404).end();
+
+  sseSetup(res);
+
+  // Determine transcript path from session events
+  const events      = parseJsonLines(path.join(dir, "log.jsonl"));
+  const interviewEv = events.find((e) => e.event === "interview-start");
+  const designEv    = events.find((e) => e.event === "role-design-start");
+  const sessionType = designEv ? "create-role" : "interview";
+  const roleId      = interviewEv?.role ?? null;
+
+  let transcriptPath = null;
+  if (sessionType === "interview" && roleId) {
+    try {
+      const roles = org.loadRoles();
+      const role  = roles[roleId];
+      if (role) transcriptPath = path.join(__dirname, role.transcriptPath);
+    } catch {}
+  } else if (sessionType === "create-role") {
+    transcriptPath = path.join(dir, "role-design-transcript.md");
+  }
+
+  const pendingPath = path.join(dir, "pending-input.json");
+  let pendingInput  = null;
+  if (fs.existsSync(pendingPath)) {
+    try { pendingInput = JSON.parse(fs.readFileSync(pendingPath, "utf8")); } catch {}
+  }
+  const transcript = transcriptPath && fs.existsSync(transcriptPath)
+    ? fs.readFileSync(transcriptPath, "utf8") : null;
+
+  sseSend(res, "snapshot", { type: sessionType, roleId, transcript, pendingInput });
+
+  const stopLog = createTailWatcher(path.join(dir, "log.jsonl"), (lines) => {
+    const newEvents = lines.flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+    sseSend(res, "log", { newEvents });
+    if (newEvents.some((e) => e.event === "pipeline-complete"))
+      sseSend(res, "session-complete", {});
+  });
+
+  const stopPendingInput = createFileWatcher(
+    pendingPath,
+    () => {
+      if (!fs.existsSync(pendingPath)) return;
+      try {
+        const data = JSON.parse(fs.readFileSync(pendingPath, "utf8"));
+        sseSend(res, "pending-input", { prompt: data.prompt, inputType: data.type ?? "text", options: data.options ?? null });
+      } catch {}
+    },
+    () => sseSend(res, "input-cleared", {})
+  );
+
+  let stopTranscript = () => {};
+  if (transcriptPath) {
+    stopTranscript = createFileWatcher(transcriptPath, () => {
+      if (!fs.existsSync(transcriptPath)) return;
+      try { sseSend(res, "transcript", { content: fs.readFileSync(transcriptPath, "utf8") }); } catch {}
+    });
+  }
+
+  const heartbeat = setInterval(() => res.write(": ping\n\n"), 15000);
+  req.on("close", () => { stopLog(); stopPendingInput(); stopTranscript(); clearInterval(heartbeat); });
+});
+
+app.get("/api/org", (req, res) => {
+  try {
+    org.reloadAll();
+    const profileName = req.query.profile ?? null;
+    if (profileName) org.setActiveProfile(profileName);
+    const profile  = org.getActiveProfile();
+    const profiles = org.loadProfiles();
+    const nodes = profile.nodes.map((n) => ({
+      roleId:      n.roleId,
+      escalatesTo: n.escalatesTo ?? null,
+      role: {
+        id:          n.role.id,
+        name:        n.role.name,
+        description: n.role.description,
+        domains:     n.role.domains     ?? [],
+        contextFile: n.role.contextFile ?? null,
+      },
+      hasBrain:    org.brainExists(n.role),
+      brainContent: org.brainExists(n.role) ? org.readBrain(n.role) : null,
+    }));
+    res.json({
+      activeProfile:   profile.id,
+      profiles,
+      nodes,
+      decisionRouting: profile.decisionRouting ?? {},
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
 
@@ -781,6 +1048,7 @@ app.get("/api/memory", (req, res) => {
 // ---------------------------------------------------------------------------
 
 recoverActiveProcesses();
+recoverHrSession();
 
 app.listen(PORT, () => {
   console.log(`\nSoftware Factory — GUI`);

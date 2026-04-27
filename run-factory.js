@@ -28,6 +28,7 @@ const { cliAdapter } = require("./io/adapters/cli");
 const { fileAdapter } = require("./io/adapters/file");
 const { A, createPhaseDisplay, setRunDir } = require("./lib/display");
 const { runGraph, readTokenUsage, readBudgetLimit } = require("./lib/graph");
+const org = require("./lib/org");
 
 // Module-level io and mode — set once in main(), shared by leadership functions.
 let io   = null;
@@ -39,7 +40,6 @@ function createIO(runDir) {
 }
 
 const RUNS_DIR   = path.join(__dirname, "runs");
-const BRAIN_PATH = path.join(__dirname, "org/ceo/brain.md");
 const AGENTS_DIR = path.join(__dirname, "agents");
 const DIVISIONS  = ["design", "build", "review", "security"];
 
@@ -77,110 +77,27 @@ function parseArgs() {
 // Leadership token logger
 // ---------------------------------------------------------------------------
 
+function makeTokenLogger(tokenLogPath) {
+  return (label, usage) => {
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      phase: "Leadership",
+      label,
+      input:      usage?.input_tokens                ?? 0,
+      output:     usage?.output_tokens               ?? 0,
+      cacheRead:  usage?.cache_read_input_tokens     ?? 0,
+      cacheWrite: usage?.cache_creation_input_tokens ?? 0,
+    });
+    fs.appendFileSync(tokenLogPath, entry + "\n");
+  };
+}
+
+// Default token logger points to the root role's log (used for run-brain interview).
 function logTokens(label, usage) {
-  const entry = JSON.stringify({
-    ts: new Date().toISOString(),
-    phase: "Leadership",
-    label,
-    input:      usage?.input_tokens                  ?? 0,
-    output:     usage?.output_tokens                 ?? 0,
-    cacheRead:  usage?.cache_read_input_tokens       ?? 0,
-    cacheWrite: usage?.cache_creation_input_tokens   ?? 0,
-  });
-  fs.appendFileSync(path.join(__dirname, "org/ceo/brain-token-usage.jsonl"), entry + "\n");
+  makeTokenLogger(org.getTokenLogPath(org.getRootRole()))(label, usage);
 }
 
 // ---------------------------------------------------------------------------
-// Brain interview (global, one-time)
-// ---------------------------------------------------------------------------
-
-async function runBrainInterview(runDir) {
-  if (fileExists(BRAIN_PATH)) {
-    console.log(`  ${A.green("✓")}  Brain found — skipping interview\n`);
-    return;
-  }
-
-  const transcriptPath = path.join(__dirname, "org/ceo/brain-transcript.md");
-
-  if (fileExists(transcriptPath)) {
-    console.log(`  ${A.yellow("↻")}  Brain transcript found — recovering from previous session\n`);
-    const display = createPhaseDisplay("Leadership", "Brain Interview", "", "recovering...");
-    display.update("locking brain...");
-    const lockPrompt = buildSystemPrompt(
-      readFile(path.join(AGENTS_DIR, "leadership", "brain-interviewer.md")),
-      `## Interview Transcript\n\n${readFile(transcriptPath)}`
-    );
-    const result = claudeCall(
-      lockPrompt,
-      "The operator has confirmed. Produce the locked brain profile now as specified in your output format.",
-      (u) => logTokens("Brain Interviewer", u)
-    );
-    const lockedOutput = result.output ?? result;
-    if (!lockedOutput?.brain) {
-      display.stop();
-      console.error("Recovery lock did not produce a valid brain. Raw output:");
-      console.error(JSON.stringify(result, null, 2));
-      process.exit(1);
-    }
-    writeFile(BRAIN_PATH, lockedOutput.brain);
-    if (lockedOutput.config) {
-      writeFile(path.join(__dirname, "org/ceo/brain-config.json"), JSON.stringify(lockedOutput.config, null, 2));
-    }
-    display.finish("brain.md recovered");
-    console.log(`\n  ${A.dim("Brain saved to brain.md — this will be used for all future auto decisions.")}\n`);
-    return;
-  }
-
-  writeFile(transcriptPath, "# Brain Interview Transcript\n");
-
-  const systemPrompt = buildSystemPrompt(
-    readFile(path.join(AGENTS_DIR, "leadership", "brain-interviewer.md"))
-  );
-
-  const ioLocal = createIO(runDir);
-
-  const display = createPhaseDisplay("Leadership", "Brain Interview", "", "thinking...");
-  display.log(`\n  ${A.dim("The factory is building your decision-making profile.")}`);
-  display.log(`  ${A.dim('When you\'re satisfied, type "lock" to finalize.\n')}`);
-
-  async function executeLock() {
-    display.update("locking brain...");
-    const lockPrompt = buildSystemPrompt(
-      readFile(path.join(AGENTS_DIR, "leadership", "brain-interviewer.md")),
-      `## Interview Transcript\n\n${readFile(transcriptPath)}`
-    );
-    const result = claudeCall(
-      lockPrompt,
-      "The operator has confirmed. Produce the locked brain profile now as specified in your output format.",
-      (u) => logTokens("Brain Interviewer", u)
-    );
-    return result.output ?? result;
-  }
-
-  const lockedOutput = await runLockableInterview({
-    systemPrompt, transcriptPath, display, io: ioLocal,
-    agentName: "Brain Interviewer",
-    lockSignalRe: /ready to lock the brain/i,
-    lockConfirmPrompt: "Lock the brain?",
-    executeLock,
-    onUsage: (u) => logTokens("Brain Interviewer", u),
-  });
-
-  if (!lockedOutput?.brain) {
-    console.error("Brain interview did not produce a valid locked output.");
-    console.error(JSON.stringify(lockedOutput, null, 2));
-    process.exit(1);
-  }
-
-  writeFile(BRAIN_PATH, lockedOutput.brain);
-  if (lockedOutput.config) {
-    writeFile(path.join(__dirname, "org/ceo/brain-config.json"), JSON.stringify(lockedOutput.config, null, 2));
-  }
-  display.finish("brain.md written");
-  ioLocal.close();
-  console.log(`\n  ${A.dim("Brain saved to brain.md — this will be used for all future auto decisions.")}\n`);
-}
-
 // ---------------------------------------------------------------------------
 // Run brain interview (per-run, after Design)
 // ---------------------------------------------------------------------------
@@ -196,7 +113,7 @@ async function runRunBrainInterview(runDir) {
 
   const systemPrompt = buildSystemPrompt(
     readFile(path.join(AGENTS_DIR, "leadership", "run-brain-interviewer.md")),
-    `## Global Brain\n\n${readFile(BRAIN_PATH)}`,
+    `## Global Brain\n\n${org.readBrain(org.getRootRole())}`,
     `## Factory Manifest\n\n${readFile(path.join(handoffDir, "factory-manifest.json"))}`,
     `## Build Spec\n\n${readFile(path.join(handoffDir, "build-spec.md"))}`,
     fileExists(path.join(handoffDir, "review-spec.md"))
@@ -243,7 +160,7 @@ async function runRunBrainInterview(runDir) {
     display.update("locking run brain...");
     const lockPrompt = buildSystemPrompt(
       readFile(path.join(AGENTS_DIR, "leadership", "run-brain-interviewer.md")),
-      `## Global Brain\n\n${readFile(BRAIN_PATH)}`,
+      `## Global Brain\n\n${org.readBrain(org.getRootRole())}`,
       `## Factory Manifest\n\n${readFile(path.join(handoffDir, "factory-manifest.json"))}`,
       `## Build Spec\n\n${readFile(path.join(handoffDir, "build-spec.md"))}`,
       fileExists(path.join(handoffDir, "review-spec.md"))
@@ -345,10 +262,18 @@ async function main() {
   console.log(`Profile: ${isDefault ? A.dim(profileName) : A.cyan(profileName)}`);
   console.log(`Mode:    ${mode}${stopAfter ? `  ·  stopping after ${stopAfter}` : ""}${caveman ? `  ·  ${A.dim("caveman")}` : ""}\n`);
 
-  // ── Brain (global, one-time) ─────────────────────────────────────────────
+  // ── Org brains check ────────────────────────────────────────────────────
 
-  if (!fileExists(BRAIN_PATH)) logEvent(runDir, { phase: "leadership", event: "brain-interview-start" });
-  await runBrainInterview(runDir);
+  const missingBrains = org.getRolesMissingBrain();
+  if (missingBrains.length === 0) {
+    console.log(`  ${A.green("✓")}  Org brains ready\n`);
+  } else if (mode === "auto") {
+    console.log(`  ${A.yellow("⚠")}  No brain found for: ${missingBrains.map((r) => r.name).join(", ")}`);
+    console.log(`  ${A.dim("Run HR first to build org brains (node run-hr.js --role <id>).")}`);
+    console.log(`  ${A.dim("Auto-mode decisions will require human input until brains are set up.\n")}`);
+  } else {
+    console.log(`  ${A.dim("ℹ")}  No org brains set up — run HR to enable auto-mode decisions\n`);
+  }
 
   // ── Graph executor ───────────────────────────────────────────────────────
 

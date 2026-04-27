@@ -7,26 +7,26 @@ Update this as decisions are made or plans change.
 
 ## Context
 
-The factory is a multi-agent Claude pipeline: concept → shippable artifact across four hardcoded
-divisions (Design, Build, Review, Security). A `brain.md` profile drives autonomous decisions with
-human escalation as fallback. The work below is in two categories: **cleanup** (restructuring what
-exists) and **evolution** (new capabilities).
+The factory is a multi-agent Claude pipeline: concept → shippable artifact across four divisions
+(Design, Build, Review, Security), driven by a data-driven graph profile. Autonomous decisions are
+routed through an org chart of role brains; human escalation is the fallback. The system has two
+peer orchestrators — `run-factory.js` (production pipeline) and `run-hr.js` (org management) —
+that share infrastructure but operate independently. The work below is in two categories:
+**cleanup** (restructuring what exists) and **evolution** (new capabilities).
 
 ---
 
-## Target Directory Structure
+## Current Directory Structure
 
 ```
 dark-room/
-  run-factory.js              ← user entry point
-  run-gui.js                  ← user entry point
-  inspect.js                  ← user entry point
+  run-factory.js              ← production pipeline entry point
+  run-hr.js                   ← HR entry point (role design + brain interviews)
+  run-gui.js                  ← GUI server entry point
 
   profiles/                   ← pipeline graph templates
-    full.json
-    incremental.json          (Build → Review → Security)
-    security-audit.json
-    code-review.json
+    full.json                 (Design → Build → Review → Security)
+    lean.json                 (Design → Build → Review)
 
   departments/                ← division runners (spawned by factory, not run directly)
     run-design.js
@@ -34,42 +34,41 @@ dark-room/
     run-review.js
     run-security.js
 
-  agents/                     ← agent prompts (unchanged)
+  agents/                     ← agent prompts
     build/ design/ review/ security/ leadership/ shared/ caveman/
+    hr/
+      brain-interviewer.md    (generic role brain interviewer)
+      role-designer.md        (conversational role spec designer)
 
   lib/                        ← shared internal library
-    runner-utils.js           (file IO, string helpers, interview loop — no execution logic)
+    runner-utils.js
     display.js
     token-log.js
+    graph.js                  (profile-driven graph executor)
+    org.js                    (org chart data layer)
+    memory.js                 (memory wiki read/write/inject)
 
-  io/                         ← user I/O adapters (unchanged structure)
+  io/                         ← user I/O adapters
     adapters/cli.js
     adapters/file.js
     interaction.js
 
-  adapters/                   ← execution adapters (how agents are invoked)
-    claude-cli.js             (current behavior, extracted from runner-utils)
+  adapters/                   ← execution adapters
+    claude-cli.js
     claude-api.js             (future)
     local.js                  (future)
 
-  org/                        ← org chart: brain definitions + role memory
-    ceo/
-      brain.md                (current brain.md — cross-cutting decisions)
-      brain-config.json       (generated from interview)
-      brain.example.md
-      memory/                 (role decision ledger)
-    cto/                      (future — technical decisions)
-      memory/
-    cmo/                      (future — copy/brand decisions)
-      memory/
+  org/                        ← org chart definition + per-role brain files
+    chart.json                (data-driven role definitions — add roles here, no code changes)
+    <roleId>/                 (one directory per defined role, created by HR)
+      brain.md
+      brain-transcript.md
+      brain-token-usage.jsonl
 
   memory/                     ← department craft wikis (persistent, accumulated per run)
-    design/
-    build/
-    review/
-    security/
+    design/  build/  review/  security/
 
-  public/                     ← frontend (unchanged)
+  public/                     ← frontend
     app.js  index.html  style.css
 
   runs/                       ← runtime data (gitignored)
@@ -304,9 +303,10 @@ spec-equivalent from unknown code, every downstream step inherits the error.
 
 ---
 
-### Phase 6 — Memory Wiki Infrastructure
+### Phase 6 — Memory Wiki Infrastructure ✓ COMPLETE
 **Type:** New feature. Non-breaking addition.
 **Depends on:** Phase 1 (directories exist)
+**Completed:** 2026-04-25
 
 Each department accumulates two memory files in `memory/{dept}/`:
 - `runs.jsonl` — structured run records, always written, every run. Timestamp, run ID, project
@@ -391,22 +391,51 @@ completed and the user wants to see what was newly learned. No SSE involvement.
 
 ---
 
-### Phase 7 — Org Chart: Specialist Brains
+### Phase 7 — Org Chart: Specialist Brains ✓ COMPLETE
 **Type:** New feature. Extends brain system.
 **Depends on:** Phase 6 (role memory infrastructure exists)
+**Completed:** 2026-04-26
 
-Introduce specialist brains alongside the current CEO-brain:
+Built as a generic, data-driven org system rather than hardcoded CTO/CMO roles. The key design
+insight: **brains are employees, not factory config.** They are set up by HR before production
+starts. The factory consults them at decision points — that is the only relationship.
 
-- **CTO-brain** (`org/cto/brain.md`) — technical decisions: architecture, stack, patterns
-- **CMO-brain** (`org/cmo/brain.md`) — copy voice, brand, UX decisions
-- **CEO-brain** (`org/ceo/brain.md`) — cross-cutting calls (current `brain.md`, unchanged)
+#### What was built
 
-The pipeline agent escalates to the domain-appropriate specialist rather than always to the
-CEO-brain. Most decisions never leave their domain. The CEO-brain and human are last resort.
+**`org/chart.json`** — data-driven org chart. A role is a JSON entry with `id`, `name`,
+`description`, `decidesOn` (decision points this role owns), `escalatesTo` (parent role ID or
+null), `domains` (interview topics), `brainPath`, and optional `contextFile`. Adding a new role
+is a data edit — no code changes required.
 
-Each specialist brain has its own memory wiki (role decision ledger) that sharpens through use.
-The same specialist brains built here carry into the control plane when that layer is built —
-same entities, broader invocation context.
+**`lib/org.js`** — pure data layer. Role lookups, escalation chain walking, brain file helpers,
+`getBrainForDecision()` (walks escalation chain until a brain exists), `addRole()` (writes to
+`chart.json` and creates the role directory), `buildCreateRoleContext()` (injects current org
+state into the role-designer agent).
+
+**`run-hr.js`** — standalone HR orchestrator, peer to `run-factory.js`. Two modes:
+- `--role <id>` — brain interview for an existing role
+- `--create-role` — role design session (conversational spec) followed immediately by brain interview
+
+The factory does not run HR. It checks for missing brains at startup and warns if in auto mode;
+decisions fall back to human input until HR sets the org up.
+
+**`agents/hr/brain-interviewer.md`** — generic role brain interviewer. Reads role name,
+description, and domain list from injected context — one agent handles any role.
+
+**`agents/hr/role-designer.md`** — conversational role designer. Walks the operator through
+naming the role, assigning decision points, setting escalation, and designing interview domains.
+Outputs a locked role spec; `run-hr.js` writes it to `chart.json` then flows into the brain
+interview in the same session.
+
+**GUI — Factory Org view** — new left-nav section with role sidebar (status badges), Brain tab
+(renders `brain.md` as markdown), and Org tab (description, decision point badges, escalation
+chain, domain cards). "Run Interview" / "Re-interview" button in the header launches an HR
+session and navigates to the monitor. "+ New Role" button at the bottom of the sidebar starts a
+create-role HR session.
+
+**`run-factory.js`** — startup check warns if auto mode and brains are missing; no longer runs
+interviews itself. All 5 decision functions route through `org.getBrainForDecision()`. Config
+values (`tokenLimitPerRun`, `maxLoopsBeforeEscalate`) read via `org.readConfigValue()`.
 
 ---
 
@@ -561,18 +590,18 @@ intentionally as the system becomes more autonomous.
 ## Sequencing Summary
 
 ```
-Phase 1   Directory restructure              low risk    standalone
-Phase 2   Execution adapter extraction       medium      after Phase 1
-Phase 3   Pipeline graph schema design       design      after Phase 1, no code
-Phase 4   Graph executor + full.json         medium      after Phase 3
-Phase 5   Second profile validation          low         after Phase 4
-Phase 5b  Upgrade pipeline                   deferred    after Phase 5, pending 6–7
-Phase 6   Memory wiki infrastructure         medium      after Phase 1
-Phase 7   Org chart / specialist brains      high        after Phase 6
-Phase 8   Typed edges + department manifests medium      after Phase 5
-Phase 9   Visual graph editor (Drawflow)     high        after Phase 8
+Phase 1   Directory restructure              ✓ complete  2026-04-24
+Phase 2   Execution adapter extraction       ✓ complete  2026-04-24
+Phase 3   Pipeline graph schema design       ✓ complete  2026-04-24
+Phase 4   Graph executor + full.json         ✓ complete  2026-04-24
+Phase 5   Second profile validation          ✓ complete  2026-04-25
+Phase 5b  Upgrade pipeline                   deferred    unblocked — ready when prioritized
+Phase 6   Memory wiki infrastructure         ✓ complete  2026-04-25
+Phase 7   Org chart / HR / specialist brains ✓ complete  2026-04-26
+Phase 8   Typed edges + department manifests next        after Phase 5
+Phase 9   Visual graph editor (Drawflow)     planned     after Phase 8
 ```
 
 Phases 1–2 are cleanup. Phases 3–5 are the graph. Phases 6–7 are evolution features.
-Phase 5b (upgrade pipeline) is designed but deferred until 6–7 are complete.
+Phase 5b (upgrade pipeline) is now unblocked and can be taken before or after Phase 8.
 Each phase leaves the system in a fully working state.

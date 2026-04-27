@@ -1,0 +1,40 @@
+{
+  "id": "ceo",
+  "name": "CEO",
+  "description": "Cross-cutting decisions — management style, quality bar, verdict posture, escalation threshold",
+  "brainPath": "org/ceo/brain.md",
+  "transcriptPath": "org/ceo/brain-transcript.md",
+  "tokenLogPath": "org/ceo/brain-token-usage.jsonl",
+  "contextFile": null,
+  "config": ["tokenLimitPerRun", "maxLoopsBeforeEscalate"],
+  "domains": [
+    {
+      "name": "Identity & Context",
+      "hint": "What software they build, who uses it, what 'production' means for this operator, and who gets hurt if something ships broken"
+    },
+    {
+      "name": "Management Style",
+      "hint": "Bias toward shipping vs. holding, tolerance for risk, preference for being interrupted vs. letting the factory decide autonomously"
+    },
+    {
+      "name": "Quality Bar",
+      "hint": "What makes a blocking vs. non-blocking issue. Tolerance for rough edges in a first release. What a blocking review failure looks like vs. a non-blocking one."
+    },
+    {
+      "name": "Review & Verdict Posture",
+      "hint": "When to accept or override no-ship verdicts. Which failure types always block regardless of severity. Which never block regardless of how a reviewer flags them. Loop tolerance before escalation."
+    },
+    {
+      "name": "Security Posture",
+      "hint": "Severity thresholds. What can be accepted with documented risk vs. must be fixed. How context (internal tool vs. user-facing) changes the calculus."
+    },
+    {
+      "name": "Copy Voice",
+      "hint": "Tone and formality. Technical vs. accessible. Error message philosophy and format. Anti-patterns to avoid. Examples of copy they love and hate."
+    },
+    {
+      "name": "Escalation Threshold",
+      "hint": "Situations that always interrupt the operator. What the factory should never decide autonomously. Tolerance for a wrong autonomous call vs. over-interrupting."
+    }
+  ]
+}

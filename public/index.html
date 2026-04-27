@@ -21,6 +21,8 @@
         <div class="nav-item" data-view="monitor">Run Viewer</div>
         <div class="nav-item" data-view="browser">Run Browser</div>
         <div class="nav-item" data-view="profiles">Factory Profiles</div>
+        <div class="nav-item" data-view="roles">Factory Roles</div>
+        <div class="nav-item" data-view="orgcharts">Org. Charts</div>
         <div class="nav-item" data-view="memory">Factory Memory</div>
       </div>
     </nav>
@@ -212,6 +214,59 @@
             <div id="profiles-editor-pane">
               <div id="profiles-editor-error"></div>
               <textarea id="profiles-editor" spellcheck="false" placeholder="Select a profile to edit…"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Factory Roles ── -->
+      <div id="view-roles" class="view">
+        <div class="panel-header">
+          <h2>Factory Roles</h2>
+          <button id="org-refresh-btn" class="memory-refresh-btn">↺ Refresh</button>
+          <button id="org-interview-btn" class="org-interview-btn" disabled>Run Interview</button>
+        </div>
+        <div id="org-body">
+          <div id="org-sidebar"></div>
+          <div id="org-main" class="org-mode-brain">
+            <div id="org-brain-pane">
+              <div class="empty-state">
+                <span>Select a role</span>
+                <span class="hint">The role's brain will appear here.</span>
+              </div>
+            </div>
+            <div id="org-hr-pane">
+              <div id="org-hr-header">
+                <span id="org-hr-title">HR Session</span>
+                <span id="org-hr-status"></span>
+                <button id="org-hr-end-btn">End Session</button>
+              </div>
+              <div id="org-hr-transcript"></div>
+              <div id="org-hr-input-area">
+                <div id="org-hr-prompt"></div>
+                <div id="org-hr-options"></div>
+                <div id="org-hr-input-row">
+                  <textarea id="org-hr-field" rows="3" placeholder="Type your response…"></textarea>
+                  <button id="org-hr-send">Send</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Org. Charts ── -->
+      <div id="view-orgcharts" class="view">
+        <div class="panel-header">
+          <h2>Org. Charts</h2>
+          <button id="orgcharts-refresh-btn" class="memory-refresh-btn">↺ Refresh</button>
+        </div>
+        <div id="orgcharts-body">
+          <div id="orgcharts-sidebar"></div>
+          <div id="orgcharts-main">
+            <div class="empty-state">
+              <span>Select a profile</span>
+              <span class="hint">The org hierarchy will appear here.</span>
             </div>
           </div>
         </div>

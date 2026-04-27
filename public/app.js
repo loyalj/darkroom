@@ -29,6 +29,9 @@ const state = {
   pendingInput: null,
   // Factory Memory
   memory: { data: null, activeDept: "design", activeTab: "wiki" },
+  // Factory Org
+  org: { roles: [], activeRoleId: null, session: null },
+  orgCharts: { profiles: [], activeProfile: null, nodes: [] },
   // Profiles
   profiles: { activeName: null, content: null, mode: "preview" },
   // Department colors (loaded from /api/departments, shared across all views)
@@ -54,6 +57,8 @@ function setView(name) {
   if (name === "launch") initLaunchView();
   if (name === "profiles") loadProfiles();
   if (name === "memory") loadMemoryData();
+  if (name === "roles") loadOrgData();
+  if (name === "orgcharts") loadOrgChartsData();
 }
 
 // ---------------------------------------------------------------------------
@@ -1496,6 +1501,338 @@ function renderMemoryRunLog(dept) {
 }
 
 // ---------------------------------------------------------------------------
+// Factory Org
+// ---------------------------------------------------------------------------
+
+async function loadOrgData() {
+  const sidebar = $("#org-sidebar");
+  sidebar.innerHTML = `<div style="color:var(--muted);padding:12px 14px;font-size:12px;">Loading…</div>`;
+  try {
+    const res = await fetch("/api/roles");
+    state.org.roles = await res.json();
+  } catch {
+    sidebar.innerHTML = `<div style="color:var(--red);padding:12px 14px;font-size:12px;">Failed to load</div>`;
+    return;
+  }
+  renderOrgSidebar();
+  const firstRoleId = state.org.roles[0]?.id ?? null;
+  if (!state.org.activeRoleId && firstRoleId) {
+    selectOrgRole(firstRoleId);
+  } else if (state.org.activeRoleId) {
+    selectOrgRole(state.org.activeRoleId);
+  }
+  await checkHrSession();
+}
+
+function renderOrgSidebar() {
+  const sidebar = $("#org-sidebar");
+  sidebar.innerHTML = "";
+  for (const role of state.org.roles) {
+    const item = document.createElement("div");
+    item.className = "org-role-item" + (role.id === state.org.activeRoleId ? " active" : "");
+    item.dataset.roleId = role.id;
+    const statusClass = role.hasBrain ? "org-status-ready" : "org-status-missing";
+    const statusLabel = role.hasBrain ? "ready" : "needs interview";
+    item.innerHTML = `
+      <span class="org-role-name">${escHtml(role.name)}</span>
+      <span class="org-role-status ${statusClass}">${statusLabel}</span>
+    `;
+    item.addEventListener("click", () => selectOrgRole(role.id));
+    sidebar.appendChild(item);
+  }
+
+  const newBtn = document.createElement("button");
+  newBtn.className = "org-new-role-btn";
+  newBtn.textContent = state.org.session ? "Session in progress…" : "+ New Role";
+  newBtn.disabled = !!state.org.session;
+  newBtn.addEventListener("click", startCreateRole);
+  sidebar.appendChild(newBtn);
+}
+
+async function startCreateRole() {
+  const btn = $(".org-new-role-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+  try {
+    const res = await fetch("/api/org/roles/create", { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error ?? "Failed to start HR session");
+    await checkHrSession();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = "+ New Role"; }
+    alert(`HR error: ${e.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HR session management
+// ---------------------------------------------------------------------------
+
+async function checkHrSession() {
+  try {
+    const res  = await fetch("/api/org/session");
+    const data = await res.json();
+    if (data.active) {
+      openHrSession(data);
+    } else if (state.org.session) {
+      closeHrSession(false); // session ended externally
+    }
+  } catch {}
+}
+
+function openHrSession(data) {
+  // If already open for same session, just reconnect if needed
+  if (state.org.session?.runId === data.runId && state.org.session?.es) return;
+
+  // Close any previous session stream
+  if (state.org.session?.es) state.org.session.es.close();
+
+  const typeLabel = data.type === "create-role" ? "New Role Design" : `Brain Interview`;
+  const roleLabel = data.roleId ? ` — ${data.roleId}` : "";
+  $("#org-hr-title").textContent = typeLabel + roleLabel;
+
+  // Render initial transcript
+  if (data.transcript) {
+    renderHrTranscript(data.transcript);
+  } else {
+    $("#org-hr-transcript").innerHTML = `<div class="org-hr-thinking">Starting session…</div>`;
+  }
+
+  // Show initial pending input or thinking state
+  if (data.pendingInput) {
+    showHrInput(data.pendingInput);
+  } else {
+    setHrStatus("thinking");
+  }
+
+  // Switch to HR mode
+  setOrgTab("hr");
+
+  // Disable navigation buttons
+  renderOrgSidebar();
+  const interviewBtn = $("#org-interview-btn");
+  interviewBtn.textContent = "Session in progress…";
+  interviewBtn.disabled = true;
+
+  // Connect SSE stream
+  const es = new EventSource(`/api/hr-session/${data.runId}/stream`);
+  state.org.session = { runId: data.runId, type: data.type, roleId: data.roleId, es };
+
+  es.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "snapshot") {
+      if (msg.transcript) renderHrTranscript(msg.transcript);
+      if (msg.pendingInput) showHrInput(msg.pendingInput);
+      else setHrStatus("thinking");
+    } else if (msg.type === "transcript") {
+      renderHrTranscript(msg.content);
+    } else if (msg.type === "pending-input") {
+      showHrInput({ prompt: msg.prompt, type: msg.inputType, options: msg.options });
+    } else if (msg.type === "input-cleared") {
+      hideHrInput();
+      setHrStatus("thinking");
+    } else if (msg.type === "session-complete") {
+      es.close();
+      state.org.session = null;
+      closeHrSession(true);
+    }
+  };
+  es.onerror = () => {};
+}
+
+async function closeHrSession(reload) {
+  if (state.org.session?.es) state.org.session.es.close();
+  state.org.session = null;
+  hideHrInput();
+  setOrgTab("brain");
+  if (reload) {
+    await loadOrgData();
+  } else {
+    renderOrgSidebar(); // re-enable buttons
+    if (state.org.activeRoleId) {
+      const btn = $("#org-interview-btn");
+      const role = state.org.roles?.find((r) => r.id === state.org.activeRoleId);
+      if (role) { btn.textContent = role.hasBrain ? "Re-interview" : "Run Interview"; btn.disabled = false; }
+    }
+  }
+}
+
+function renderHrTranscript(content) {
+  const pane = $("#org-hr-transcript");
+  pane.innerHTML = marked.parse(content);
+  pane.querySelectorAll("pre code").forEach((el) => hljs.highlightElement(el));
+  pane.scrollTop = pane.scrollHeight;
+}
+
+function setHrStatus(status) {
+  const el = $("#org-hr-status");
+  el.textContent = status === "thinking" ? "thinking…" : status === "waiting" ? "waiting for you" : "";
+  el.className = `org-hr-status org-hr-status-${status}`;
+}
+
+function showHrInput(input) {
+  setHrStatus("waiting");
+  const area = $("#org-hr-input-area");
+  area.style.display = "flex";
+
+  const promptEl = $("#org-hr-prompt");
+  promptEl.innerHTML = "";
+  if (input.prompt) {
+    promptEl.textContent = input.prompt;
+    promptEl.hidden = false;
+  } else {
+    promptEl.hidden = true;
+  }
+
+  const optionsEl = $("#org-hr-options");
+  optionsEl.innerHTML = "";
+  if (input.options?.length > 0) {
+    for (const opt of input.options) {
+      const btn = document.createElement("button");
+      btn.className = "org-hr-option-btn";
+      btn.textContent = opt;
+      btn.addEventListener("click", () => submitHrResponse(opt));
+      optionsEl.appendChild(btn);
+    }
+  }
+
+  const field = $("#org-hr-field");
+  const isTextOnly = input.type === "options" && !(input.type === "hybrid");
+  field.hidden = isTextOnly;
+  if (!isTextOnly) { field.focus(); }
+}
+
+function hideHrInput() {
+  $("#org-hr-input-area").style.display = "none";
+  $("#org-hr-field").value = "";
+  $("#org-hr-options").innerHTML = "";
+}
+
+async function submitHrResponse(text) {
+  const val = (text ?? $("#org-hr-field").value).trim();
+  if (!val || !state.org.session) return;
+  hideHrInput();
+  setHrStatus("thinking");
+  try {
+    await fetch(`/api/hr-session/${state.org.session.runId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ response: val }),
+    });
+  } catch {}
+}
+
+function selectOrgRole(roleId) {
+  state.org.activeRoleId = roleId;
+  $$(".org-role-item").forEach((el) => el.classList.toggle("active", el.dataset.roleId === roleId));
+  const role = state.org.roles?.find((r) => r.id === roleId);
+  if (!role) return;
+
+  const btn = $("#org-interview-btn");
+  if (state.org.session) {
+    btn.textContent = "Session in progress…";
+    btn.disabled = true;
+  } else {
+    btn.textContent = role.hasBrain ? "Re-interview" : "Run Interview";
+    btn.disabled = false;
+  }
+
+  renderOrgBrain(role);
+}
+
+function setOrgTab(tab) {
+  $("#org-main").className = `org-mode-${tab}`;
+}
+
+function renderOrgBrain(role) {
+  const pane = $("#org-brain-pane");
+  if (role.hasBrain && role.brainContent) {
+    pane.className = "mem-wiki";
+    pane.innerHTML = marked.parse(role.brainContent);
+    pane.querySelectorAll("pre code").forEach((el) => hljs.highlightElement(el));
+  } else {
+    pane.className = "";
+    pane.innerHTML = `
+      <div class="empty-state">
+        <span>No brain yet for ${escHtml(role.name)}</span>
+        <span class="hint">Run an interview to build this role's decision-making profile.</span>
+      </div>`;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Org Charts view
+// ---------------------------------------------------------------------------
+
+async function loadOrgChartsData(profileName) {
+  const sidebar = $("#orgcharts-sidebar");
+  sidebar.innerHTML = `<div style="color:var(--muted);padding:12px 14px;font-size:12px;">Loading…</div>`;
+  try {
+    const qs = profileName ? `?profile=${encodeURIComponent(profileName)}` : "";
+    const res  = await fetch(`/api/org${qs}`);
+    const data = await res.json();
+    state.orgCharts.profiles     = data.profiles ?? [];
+    state.orgCharts.activeProfile = data.activeProfile;
+    state.orgCharts.nodes        = data.nodes ?? [];
+  } catch {
+    sidebar.innerHTML = `<div style="color:var(--red);padding:12px 14px;font-size:12px;">Failed to load</div>`;
+    return;
+  }
+  renderOrgChartsSidebar();
+  renderOrgChartsTree();
+}
+
+function renderOrgChartsSidebar() {
+  const sidebar = $("#orgcharts-sidebar");
+  sidebar.innerHTML = "";
+  for (const p of state.orgCharts.profiles) {
+    const item = document.createElement("div");
+    item.className = "orgcharts-profile-item" + (p.name === state.orgCharts.activeProfile ? " active" : "");
+    item.dataset.profile = p.name;
+    item.innerHTML = `
+      <span class="orgcharts-profile-name">${escHtml(p.name)}</span>
+      ${p.description ? `<span class="orgcharts-profile-desc">${escHtml(p.description)}</span>` : ""}
+    `;
+    item.addEventListener("click", () => loadOrgChartsData(p.name));
+    sidebar.appendChild(item);
+  }
+}
+
+function renderOrgChartsTree() {
+  const main  = $("#orgcharts-main");
+  const nodes = state.orgCharts.nodes ?? [];
+
+  if (nodes.length === 0) {
+    main.innerHTML = `<div class="empty-state"><span>No roles in this profile</span><span class="hint">Add roles via Factory Roles to populate the org chart.</span></div>`;
+    return;
+  }
+
+  const childrenOf = {};
+  const allIds = new Set(nodes.map((n) => n.roleId));
+  for (const node of nodes) {
+    const parent = node.escalatesTo ?? "__human__";
+    if (!childrenOf[parent]) childrenOf[parent] = [];
+    childrenOf[parent].push(node);
+  }
+
+  function renderNode(node) {
+    const statusClass = node.hasBrain ? "org-node-ready" : "org-node-missing";
+    const children    = childrenOf[node.roleId] ?? [];
+    const card = `<div class="org-node-card ${statusClass}" data-role-id="${escHtml(node.role.id)}">
+      <span class="org-node-name">${escHtml(node.role.name)}</span>
+      <span class="org-node-dot"></span>
+    </div>`;
+    if (children.length === 0) return `<li>${card}</li>`;
+    return `<li>${card}<ul>${children.map(renderNode).join("")}</ul></li>`;
+  }
+
+  const roots = nodes.filter((n) => !n.escalatesTo || !allIds.has(n.escalatesTo));
+  const humanCard = `<div class="org-node-card org-node-human"><span class="org-node-name">Human</span><span class="org-node-dot"></span></div>`;
+
+  main.innerHTML = `<div class="org-chart"><ul><li>${humanCard}<ul>${roots.map(renderNode).join("")}</ul></li></ul></div>`;
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
@@ -1552,6 +1889,43 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("#memory-refresh-btn").addEventListener("click", loadMemoryData);
+
+  // Roles
+  $("#org-refresh-btn").addEventListener("click", () => loadOrgData());
+
+  // Org Charts
+  $("#orgcharts-refresh-btn").addEventListener("click", () => loadOrgChartsData(state.orgCharts.activeProfile));
+  $("#org-interview-btn").addEventListener("click", async () => {
+    const roleId = state.org.activeRoleId;
+    if (!roleId || state.org.session) return;
+    const btn = $("#org-interview-btn");
+    const prevText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    try {
+      const res = await fetch(`/api/org/${roleId}/interview`, { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error ?? "Failed to start interview");
+      await checkHrSession();
+    } catch (e) {
+      btn.textContent = prevText;
+      btn.disabled = state.org.session != null;
+      alert(`Interview error: ${e.message}`);
+    }
+  });
+
+  // HR session pane
+  $("#org-hr-end-btn").addEventListener("click", async () => {
+    if (!confirm("End the HR session? Any unsaved progress will be lost.")) return;
+    await fetch("/api/org/session", { method: "DELETE" });
+    closeHrSession(false);
+  });
+
+  $("#org-hr-send").addEventListener("click", () => submitHrResponse());
+
+  $("#org-hr-field").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitHrResponse(); }
+  });
 
   // Collapsible sections
   $$(".section-title").forEach((title) => {
