@@ -1,0 +1,10 @@
+{
+  "id": "default-static-analyst",
+  "name": "Default Static Analyst",
+  "description": "Performs static code security analysis.",
+  "slotType": "static-analyst",
+  "department": "security",
+  "builtin": true,
+  "sourceFile": "departments/security/static-analyst.md",
+  "created": "2025-01-01T00:00:00.000Z"
+}

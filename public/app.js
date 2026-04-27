@@ -28,12 +28,14 @@ const state = {
   // Factory input chat pane
   pendingInput: null,
   // Factory Memory
-  memory: { data: null, activeDept: "design", activeTab: "wiki" },
+  memory: { data: null, activeDept: "design", activeTab: "wiki", editMode: false },
   // Factory Org
   org: { roles: [], activeRoleId: null, session: null },
   orgCharts: { profiles: [], activeProfile: null, nodes: [] },
+  // Factory Workers
+  workers: { list: [], slots: [], activeId: null },
   // Profiles
-  profiles: { activeName: null, content: null, mode: "preview" },
+  profiles: { activeName: null, content: null, mode: "preview", drawflow: null, depts: {} },
   // Department colors (loaded from /api/departments, shared across all views)
   deptColors: {},
 };
@@ -57,7 +59,7 @@ function setView(name) {
   if (name === "launch") initLaunchView();
   if (name === "profiles") loadProfiles();
   if (name === "memory") loadMemoryData();
-  if (name === "roles") loadOrgData();
+  if (name === "staff") loadStaffData();
   if (name === "orgcharts") loadOrgChartsData();
 }
 
@@ -171,8 +173,8 @@ function renderPipelineBar(pState) {
     let timerHtml = "";
     const t = timings[key];
     if (t) {
-      if (t.endTs) {
-        const ms = new Date(t.endTs) - new Date(t.startTs);
+      if (t.endTs || status === "failed") {
+        const ms = t.endTs ? new Date(t.endTs) - new Date(t.startTs) : Date.now() - new Date(t.startTs).getTime();
         timerHtml = `<div class="phase-timer">${fmtDuration(ms)}</div>`;
       } else {
         const elapsed = Date.now() - new Date(t.startTs).getTime();
@@ -189,9 +191,10 @@ function renderPipelineBar(pState) {
 
     const segmentsHtml = steps.map((_, i) => {
       let cls = "phase-segment";
-      if (allDone)              cls += " done";
-      else if (i < stepIdx)     cls += " done";
-      else if (i === stepIdx)   cls += " active";
+      if (status === "failed")   cls += " failed";
+      else if (allDone)          cls += " done";
+      else if (i < stepIdx)      cls += " done";
+      else if (i === stepIdx)    cls += " active";
       return `<div class="${cls}"></div>`;
     }).join("");
 
@@ -247,9 +250,13 @@ function renderTokenTable(tokens) {
 function renderBudgetBar(tokens) {
   const bar = $("#budget-bar");
   const limit = state.tokenLimit;
-  if (!limit) { bar.innerHTML = ""; return; }
-
   const spent = tokenOutputTotal(tokens);
+
+  if (!limit) {
+    bar.innerHTML = `<span class="budget-no-limit">No token budget set</span>`;
+    return;
+  }
+
   const pct = Math.min((spent / limit) * 100, 100);
   const pctRound = Math.round(pct);
   const colorClass = pct >= 90 ? "budget-red" : pct >= 75 ? "budget-yellow" : "budget-green";
@@ -588,8 +595,10 @@ function connectRun(runId) {
 
   const sse = new EventSource(`/api/runs/${runId}/stream`);
   state.sse = sse;
+  let sseErrorStreak = 0;
 
   sse.onmessage = (ev) => {
+    sseErrorStreak = 0;
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
 
@@ -611,6 +620,7 @@ function connectRun(runId) {
       renderMonitorHeader(state.activeRunId, state.pipelineState);
       renderPipelineBar(state.pipelineState);
       $("#current-step").textContent = state.pipelineState?.currentStep ?? "Waiting…";
+      $("#step-status").textContent = state.pipelineState?.failReason ?? "";
       renderActivity();
 
     } else if (msg.type === "budget") {
@@ -659,13 +669,24 @@ function connectRun(runId) {
     }
   };
 
-  sse.onerror = () => {}; // EventSource auto-reconnects
+  sse.onerror = () => {
+    const v = state.pipelineState?.verdict;
+    // Terminal state — run is done, no need to keep the connection open
+    if (v && v !== "running") { sse.close(); state.sse = null; return; }
+    // No terminal state yet — EventSource will auto-reconnect; show warning after repeated failures
+    sseErrorStreak++;
+    if (sseErrorStreak >= 4) {
+      $("#current-step").textContent = "Connection lost — run status unknown";
+      renderMonitorHeader(state.activeRunId, null);
+    }
+  };
 }
 
 function renderAll() {
   renderMonitorHeader(state.activeRunId, state.pipelineState);
   renderPipelineBar(state.pipelineState);
   $("#current-step").textContent = state.pipelineState?.currentStep ?? "Waiting…";
+  $("#step-status").textContent = state.pipelineState?.failReason ?? "";
   renderTokenTable(state.tokens);
   renderDecisions(state.decisions);
   renderTabStrip(state.fileCategories);
@@ -752,15 +773,21 @@ function hexToRgba(hex, alpha) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
 }
 
-async function ensureDeptColors() {
-  if (Object.keys(state.deptColors).length) return;
+async function ensureDepts() {
+  if (Object.keys(state.profiles.depts).length) return state.profiles.depts;
   try {
     const res = await fetch("/api/departments");
     const data = await res.json();
+    state.profiles.depts = data;
     for (const [id, val] of Object.entries(data)) {
       state.deptColors[id] = typeof val === "string" ? val : (val.color ?? "#888");
     }
-  } catch { /* leave empty */ }
+  } catch {}
+  return state.profiles.depts;
+}
+
+async function ensureDeptColors() {
+  await ensureDepts();
 }
 
 function nodeInlineStyle(id) {
@@ -1156,19 +1183,25 @@ function setProfilesMode(mode) {
   state.profiles.mode = mode;
   $("#profiles-main").className = `mode-${mode}`;
   $$(".profiles-mode-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.mode === mode));
-  if (mode === "preview") renderProfileGraph($("#profiles-editor").value);
+  if (mode !== "preview") hideNodeInspector();
+  if (mode === "preview") {
+    initDrawflowCanvas();
+    if (state.profiles.content) loadProfileToCanvas(state.profiles.content);
+  }
+  if (mode === "workers") renderProfileWorkers();
 }
 
 async function loadProfiles() {
-  const sidebar = $("#profiles-sidebar");
-  sidebar.innerHTML = `<div style="color: var(--muted); padding: 12px 14px; font-size: 12px;">Loading…</div>`;
-  await ensureDeptColors();
+  const list = $("#profiles-list");
+  list.innerHTML = `<div style="color: var(--muted); padding: 12px 14px; font-size: 12px;">Loading…</div>`;
+  await ensureDepts();
+  renderPalette();
   try {
     const res = await fetch("/api/profiles");
     const profiles = await res.json();
-    sidebar.innerHTML = "";
+    list.innerHTML = "";
     if (profiles.length === 0) {
-      sidebar.innerHTML = `<div style="color: var(--muted); padding: 12px 14px; font-size: 12px;">No profiles</div>`;
+      list.innerHTML = `<div style="color: var(--muted); padding: 12px 14px; font-size: 12px;">No profiles</div>`;
       return;
     }
     for (const p of profiles) {
@@ -1179,13 +1212,13 @@ async function loadProfiles() {
         <span class="profile-item-nodes">${p.nodeCount}n</span>
       `;
       item.addEventListener("click", () => loadProfile(p.name));
-      sidebar.appendChild(item);
+      list.appendChild(item);
     }
     if (!state.profiles.activeName && profiles.length > 0) {
       loadProfile(profiles[0].name);
     }
   } catch {
-    sidebar.innerHTML = `<div style="color: var(--red); padding: 12px 14px; font-size: 12px;">Failed to load</div>`;
+    list.innerHTML = `<div style="color: var(--red); padding: 12px 14px; font-size: 12px;">Failed to load</div>`;
   }
 }
 
@@ -1207,7 +1240,9 @@ async function loadProfile(name) {
     editor.disabled = false;
     state.profiles.content = data.content;
     $("#profiles-save-btn").disabled = false;
-    renderProfileGraph(data.content);
+    if (state.profiles.mode === "preview") { initDrawflowCanvas(); loadProfileToCanvas(data.content); }
+    if (state.profiles.mode === "workers") renderProfileWorkers();
+    syncPaletteState();
   } catch {
     editor.value = "";
     errEl.textContent = "Failed to load profile.";
@@ -1217,7 +1252,10 @@ async function loadProfile(name) {
 async function saveProfile() {
   const name = state.profiles.activeName;
   if (!name) return;
-  const content = $("#profiles-editor").value;
+  // In canvas mode, pull the latest profile JSON from the canvas state
+  const content = state.profiles.mode === "preview"
+    ? (canvasToProfile() ?? state.profiles.content ?? "{}")
+    : $("#profiles-editor").value;
   const errEl = $("#profiles-editor-error");
   const btn = $("#profiles-save-btn");
   const badge = $("#profiles-saved-badge");
@@ -1251,117 +1289,506 @@ async function saveProfile() {
   }
 }
 
-function renderProfileGraph(jsonText) {
-  const pane = $("#profiles-graph-pane");
-  pane.innerHTML = "";
+// ---------------------------------------------------------------------------
+// Phase 10: Drawflow canvas
+// ---------------------------------------------------------------------------
 
+const TYPE_COLORS = {
+  "design-spec":             "#c792ea",
+  "review-spec":             "#89ddff",
+  "runtime-spec":            "#f78c6c",
+  "factory-manifest":        "#ffcb6b",
+  "build-artifact":          "#58a6ff",
+  "event:ship-approved":     "#3fb950",
+  "event:ship-rejected":     "#f85149",
+  "event:security-approved": "#3fb950",
+  "event:security-rejected": "#f85149",
+  "event:build-complete":    "#79c0ff",
+};
+
+function typeColor(t) { return TYPE_COLORS[t] ?? "var(--muted)"; }
+
+function autoLayoutNodes(nodes) {
+  const SPACING_X = 290;
+  return nodes.map((n, i) => ({ x: 80 + i * SPACING_X, y: 100 }));
+}
+
+function buildNodeHtml(nodeDef, deptInfo, profile) {
+  const id      = nodeDef.id ?? "?";
+  const color   = state.deptColors[id] ?? "#888";
+  const allIns  = (deptInfo?.inputs  ?? []);
+  const allOuts = (deptInfo?.outputs ?? []);
+  const fileIns  = allIns.filter(t => !t.startsWith("event:"));
+  const fileOuts = allOuts.filter(t => !t.startsWith("event:"));
+  const evOuts   = allOuts.filter(t => t.startsWith("event:"));
+
+  const budgetAfter = new Set((profile.budgetCheckpoints ?? []).map(b => b.replace(/^after:/, "")));
+  const backEdges   = (profile.edges ?? []).filter(e => e.type === "backward" && e.from === id);
+
+  // 1. Skip condition — entry gate, shown before types
+  const skipLabel = nodeDef.skipIf      ? "skip if output exists"
+                  : nodeDef.skipIfEvent ? `skip if ${escHtml(nodeDef.skipIfEvent)}`
+                  : "";
+  const skipHtml = skipLabel ? `<div class="cn-skip">${skipLabel}</div>` : "";
+
+  // 2. IN/OUT type grid
+  const typeHeader = (fileIns.length > 0 || fileOuts.length > 0)
+    ? `<div class="cn-type-row cn-type-header"><div class="cn-type-in cn-col-label">IN</div><div class="cn-type-out cn-col-label">OUT</div></div>`
+    : "";
+  const maxRows = Math.max(fileIns.length, fileOuts.length);
+  let typeRows = "";
+  for (let r = 0; r < maxRows; r++) {
+    const inT  = fileIns[r]  ? `<span class="cn-type" style="color:${typeColor(fileIns[r])}">${escHtml(fileIns[r])}</span>`  : "";
+    const outT = fileOuts[r] ? `<span class="cn-type" style="color:${typeColor(fileOuts[r])}">${escHtml(fileOuts[r])}</span>` : "";
+    typeRows += `<div class="cn-type-row"><div class="cn-type-in">${inT}</div><div class="cn-type-out">${outT}</div></div>`;
+  }
+
+  // 3. Loop + budget badges — after types, before events
+  const midBadges = [
+    nodeDef.feedbackLoop ? `<span class="graph-badge loop">↺ loop</span>` : "",
+    budgetAfter.has(id)  ? `<span class="graph-badge budget">budget ✓</span>` : "",
+  ].filter(Boolean).join("");
+
+  // 4. Completion events
+  const eventHtml = evOuts.length
+    ? `<div class="cn-events">${evOuts.map(t => {
+        const name = t.replace("event:", "");
+        return `<span class="cn-event-chip" style="color:${typeColor(t)}">${escHtml(name)}</span>`;
+      }).join("")}</div>`
+    : "";
+
+  // 5. Back-edge routing
+  const backHtml = backEdges.length
+    ? `<div class="cn-backs">${backEdges.map(e => `
+        <div class="cn-back-rule">
+          <div class="cn-back-trigger"><span class="cn-back-on-label">on</span> ${escHtml(e.on ?? "?")}</div>
+          <div class="cn-back-action">↺ ${escHtml(e.to ?? "?")}</div>
+        </div>`
+      ).join("")}</div>`
+    : "";
+
+  return `<div class="cn-inner">
+  <div class="cn-head">
+    <span class="cn-title" style="color:${escHtml(color)}">${escHtml(id.toUpperCase())}</span>
+  </div>
+  ${skipHtml}
+  ${typeRows ? `<div class="cn-types">${typeHeader}${typeRows}</div>` : ""}
+  ${midBadges ? `<div class="graph-node-badges">${midBadges}</div>` : ""}
+  ${eventHtml}
+  ${backHtml}
+</div>`;
+}
+
+function initDrawflowCanvas() {
+  if (state.profiles.drawflow) return;
+  const host = $("#profiles-canvas-host");
+  if (!host || typeof Drawflow === "undefined") return;
+
+  const df = new Drawflow(host);
+  df.reroute = true;
+  df.reroute_fix_curvature = true;
+  df.force_first_input = false;
+  df.start();
+  state.profiles.drawflow = df;
+
+  let dirtyTimer = null;
+  const markDirty = () => {
+    clearTimeout(dirtyTimer);
+    dirtyTimer = setTimeout(() => {
+      const newContent = canvasToProfile();
+      if (newContent) {
+        state.profiles.content = newContent;
+        $("#profiles-editor").value = newContent;
+        $("#profiles-save-btn").disabled = false;
+        syncPaletteState();
+      }
+    }, 250);
+  };
+
+  df.on("nodeMoved",         markDirty);
+  df.on("nodeRemoved",       markDirty);
+  df.on("connectionRemoved", markDirty);
+  df.on("nodeCreated",       markDirty);
+
+  df.on("nodeSelected",   (numId) => {
+    const node = df.getNodeFromId(numId);
+    if (node) showNodeInspector(node.name);
+  });
+  df.on("nodeUnselected", () => hideNodeInspector());
+
+  df.zoom_max = 2;
+  df.zoom_min = 0.3;
+  df.zoom_value = 0.1;
+
+  const syncBg = () => {
+    const x    = df.canvas_x ?? 0;
+    const y    = df.canvas_y ?? 0;
+    const zoom = df.zoom ?? 1;
+    const size = 24 * zoom;
+    host.style.backgroundPosition = `${((x % size) + size) % size}px ${((y % size) + size) % size}px`;
+    host.style.backgroundSize     = `${size}px ${size}px`;
+  };
+  df.on("translate", syncBg);
+  df.on("zoom",      syncBg);
+  host.addEventListener("mousemove", syncBg);
+
+  // Drawflow's built-in zoom_enter only fires on Ctrl+Wheel; add plain-scroll zoom
+  host.addEventListener("wheel", (e) => {
+    if (e.ctrlKey) return; // let Drawflow handle Ctrl+Wheel natively
+    e.preventDefault();
+    if (e.deltaY < 0) df.zoom_in();
+    else df.zoom_out();
+    syncBg();
+  }, { passive: false });
+
+  df.on("connectionCreated", ({ output_id, input_id, output_class, input_class }) => {
+    const fromNode = df.getNodeFromId(output_id);
+    const toNode   = df.getNodeFromId(input_id);
+    const depts    = state.profiles.depts;
+    const srcOuts  = (depts[fromNode?.name]?.outputs ?? []).filter(t => !t.startsWith("event:"));
+    const tgtIns   = depts[toNode?.name]?.inputs ?? [];
+
+    if (srcOuts.length > 0 && tgtIns.length > 0 && !srcOuts.some(t => tgtIns.includes(t))) {
+      df.removeSingleConnection(output_id, input_id, output_class, input_class);
+      const errEl = $("#profiles-editor-error");
+      errEl.textContent = `Incompatible: ${fromNode?.name ?? "?"} outputs don't match ${toNode?.name ?? "?"} inputs`;
+      setTimeout(() => { if (errEl.textContent.startsWith("Incompatible")) errEl.textContent = ""; }, 3000);
+      return;
+    }
+    markDirty();
+  });
+}
+
+function loadProfileToCanvas(jsonText) {
+  const emptyEl = $("#profiles-canvas-empty");
   let profile;
   try { profile = JSON.parse(jsonText); } catch {
-    pane.innerHTML = `<div style="color: var(--muted); font-size: 12px; padding: 4px 0;">Invalid JSON — fix editor to preview</div>`;
+    if (emptyEl) emptyEl.style.display = "flex";
     return;
   }
 
   const nodes = profile.nodes ?? [];
   if (nodes.length === 0) {
-    pane.innerHTML = `<div style="color: var(--muted); font-size: 12px; padding: 4px 0;">No nodes defined</div>`;
+    if (emptyEl) emptyEl.style.display = "flex";
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = "none";
+
+  const df = state.profiles.drawflow;
+  if (!df) return;
+
+  df.clear();
+  const layout  = profile.layout ?? {};
+  const autoPos = autoLayoutNodes(nodes);
+  const depts   = state.profiles.depts;
+  const idMap   = {};  // profileNodeId → drawflow numeric id
+
+  nodes.forEach((node, idx) => {
+    const pos       = layout[node.id] ?? autoPos[idx];
+    const html      = buildNodeHtml(node, depts[node.id], profile);
+    const numInputs = (depts[node.id]?.inputs ?? []).length > 0 ? 1 : 0;
+    const dfId = df.addNode(
+      node.id, numInputs, 1,
+      pos.x, pos.y,
+      `dept-${node.id}`,
+      { profileNodeId: node.id },
+      html
+    );
+    idMap[node.id] = dfId;
+  });
+
+  for (const edge of (profile.edges ?? [])) {
+    if (edge.type !== "forward") continue;
+    const fromId = idMap[edge.from];
+    const toId   = idMap[edge.to];
+    if (fromId == null || toId == null) continue;
+    try { df.addConnection(fromId, toId, "output_1", "input_1"); } catch {}
+  }
+}
+
+function canvasToProfile() {
+  const df = state.profiles.drawflow;
+  if (!df) return state.profiles.content;
+
+  let profile;
+  try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { return state.profiles.content; }
+
+  const exported  = df.export();
+  const dfNodes   = exported?.drawflow?.Home?.data ?? {};
+  const dfIdToName = {};
+  for (const [dfId, dfNode] of Object.entries(dfNodes)) dfIdToName[dfId] = dfNode.name;
+
+  // Update layout block from current positions
+  profile.layout = {};
+  for (const dfNode of Object.values(dfNodes)) {
+    profile.layout[dfNode.name] = { x: Math.round(dfNode.pos_x), y: Math.round(dfNode.pos_y) };
+  }
+
+  // Sync nodes list: preserve existing node defs, add new, remove deleted
+  const canvasNames = new Set(Object.values(dfNodes).map(n => n.name));
+  profile.nodes = (profile.nodes ?? []).filter(n => canvasNames.has(n.id));
+  const existingIds = new Set((profile.nodes ?? []).map(n => n.id));
+  for (const dfNode of Object.values(dfNodes)) {
+    if (!existingIds.has(dfNode.name)) {
+      profile.nodes.push({
+        id: dfNode.name,
+        runner: `departments/${dfNode.name}/runner.js`,
+        memory: { readWiki: ["design","build","review","security"], readRuns: ["design","build","review","security"], write: dfNode.name },
+      });
+    }
+  }
+
+  // Rebuild forward edges from canvas connections, preserve backward edges
+  const backEdges = (profile.edges ?? []).filter(e => e.type === "backward");
+  const fwdEdges  = [];
+  for (const [, dfNode] of Object.entries(dfNodes)) {
+    for (const conn of (dfNode.outputs?.output_1?.connections ?? [])) {
+      const toName = dfIdToName[conn.node];
+      if (!toName) continue;
+      const existing = (profile.edges ?? []).find(e => e.from === dfNode.name && e.to === toName && e.type !== "backward");
+      if (existing) {
+        fwdEdges.push(existing);
+      } else {
+        const depts   = state.profiles.depts;
+        const srcOuts = depts[dfNode.name]?.outputs ?? [];
+        const tgtIns  = depts[toName]?.inputs ?? [];
+        const carries = srcOuts.filter(t => tgtIns.includes(t));
+        fwdEdges.push({ from: dfNode.name, to: toName, type: "forward", ...(carries.length ? { carries } : {}) });
+      }
+    }
+  }
+  profile.edges = [...fwdEdges, ...backEdges];
+
+  return JSON.stringify(profile, null, 2);
+}
+
+function renderPalette() {
+  const palette = $("#profiles-palette");
+  if (!palette) return;
+  const depts = state.profiles.depts;
+  palette.innerHTML = "";
+  for (const [id, info] of Object.entries(depts)) {
+    const chip = document.createElement("div");
+    chip.className = "palette-dept";
+    chip.dataset.deptId = id;
+    chip.textContent = id;
+    const color = info.color ?? "#888";
+    chip.style.borderColor = color;
+    chip.style.color = color;
+    chip.title = `Add ${id} node to canvas`;
+    chip.addEventListener("click", () => addDeptNodeToCanvas(id));
+    palette.appendChild(chip);
+  }
+}
+
+function syncPaletteState() {
+  const df = state.profiles.drawflow;
+  if (!df) return;
+  const exported = df.export();
+  const dfNodes  = exported?.drawflow?.Home?.data ?? {};
+  const onCanvas = new Set(Object.values(dfNodes).map(n => n.name));
+  $$(".palette-dept").forEach(chip => {
+    chip.classList.toggle("already-added", onCanvas.has(chip.dataset.deptId));
+  });
+}
+
+function addDeptNodeToCanvas(deptId) {
+  const df = state.profiles.drawflow;
+  if (!df) return;
+
+  let profile;
+  try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { profile = {}; }
+
+  // Find an open x position
+  const exported  = df.export();
+  const dfNodes   = exported?.drawflow?.Home?.data ?? {};
+  const maxX      = Object.values(dfNodes).reduce((m, n) => Math.max(m, n.pos_x + 200), 60);
+  const html = buildNodeHtml(
+    { id: deptId, runner: `departments/${deptId}/runner.js` },
+    state.profiles.depts[deptId],
+    profile
+  );
+  const numInputs = (state.profiles.depts[deptId]?.inputs ?? []).length > 0 ? 1 : 0;
+  df.addNode(deptId, numInputs, 1, maxX, 100, `dept-${deptId}`, { profileNodeId: deptId }, html);
+}
+
+// ---------------------------------------------------------------------------
+// Node inspector
+// ---------------------------------------------------------------------------
+
+function showNodeInspector(deptName) {
+  const deptInfo = state.profiles.depts[deptName];
+  if (!deptInfo) return;
+
+  let profile;
+  try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { profile = {}; }
+
+  const color      = state.deptColors[deptName] ?? "#888";
+  const hasBudget  = (profile.budgetCheckpoints ?? []).includes(`after:${deptName}`);
+
+  $("#inspector-dept-name").textContent = deptName.toUpperCase();
+  $("#inspector-dept-name").style.color = color;
+  $("#inspector-description").textContent = deptInfo.description ?? "";
+  $("#inspector-budget-check").checked = hasBudget;
+
+  const slots       = deptInfo.slots ?? [];
+  const slotsSection = $("#inspector-slots-section");
+  const slotsEl     = $("#inspector-slots");
+  if (slots.length > 0) {
+    slotsEl.innerHTML = slots.map(s => `
+      <div class="inspector-slot">
+        <span class="inspector-slot-name">${escHtml(s.name)}</span>
+        <span class="inspector-slot-type">${escHtml(s.description ?? "")}</span>
+      </div>`).join("");
+    slotsSection.style.display = "flex";
+  } else {
+    slotsSection.style.display = "none";
+  }
+
+  const inspector = $("#profiles-inspector");
+  inspector.classList.add("visible");
+  inspector.dataset.deptName = deptName;
+}
+
+function hideNodeInspector() {
+  const inspector = $("#profiles-inspector");
+  inspector.classList.remove("visible");
+  inspector.dataset.deptName = "";
+}
+
+// ---------------------------------------------------------------------------
+// Profile Workers roster
+// ---------------------------------------------------------------------------
+
+function updateWorkerAssignment(slotKey, workerId, schemaDefault) {
+  let profile;
+  try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { return; }
+  if (!profile.workerAssignments) profile.workerAssignments = {};
+  if (workerId === schemaDefault) {
+    delete profile.workerAssignments[slotKey];
+  } else {
+    profile.workerAssignments[slotKey] = workerId;
+  }
+  if (Object.keys(profile.workerAssignments).length === 0) delete profile.workerAssignments;
+  const newContent = JSON.stringify(profile, null, 2);
+  state.profiles.content = newContent;
+  $("#profiles-editor").value = newContent;
+  $("#profiles-save-btn").disabled = false;
+}
+
+async function renderProfileWorkers() {
+  const pane = $("#profiles-workers-pane");
+  pane.innerHTML = `<div style="color: var(--muted); font-size: 12px; padding: 4px 0;">Loading…</div>`;
+
+  try {
+    if (!state.workers.list.length) {
+      state.workers.list = await fetch("/api/workers").then((r) => r.json());
+    }
+    if (!state.workers.slots.length) {
+      state.workers.slots = await fetch("/api/workers/slots").then((r) => r.json());
+    }
+  } catch {
+    pane.innerHTML = `<div style="color: var(--red); font-size: 12px;">Failed to load workers data.</div>`;
     return;
   }
 
-  // Profile header
-  const budgetPts = (profile.budgetCheckpoints ?? []).length;
-  pane.innerHTML = `
-    <div class="graph-profile-header">${escHtml(profile.name ?? profile.id ?? "Untitled")}</div>
-    <div class="graph-profile-meta">${nodes.length} node${nodes.length === 1 ? "" : "s"}${budgetPts ? ` · ${budgetPts} budget checkpoint${budgetPts === 1 ? "" : "s"}` : ""}</div>
-  `;
-
-  // Build edge index
-  const fwdEdges = {};   // from -> edge
-  const backEdges = {};  // from -> [edges]
-  for (const edge of (profile.edges ?? [])) {
-    if (edge.type === "backward") {
-      (backEdges[edge.from] = backEdges[edge.from] ?? []).push(edge);
-    } else {
-      fwdEdges[edge.from] = edge;
-    }
+  let profile;
+  try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch {
+    pane.innerHTML = `<div style="color: var(--red); font-size: 12px;">Invalid profile JSON — switch to Code tab to fix.</div>`;
+    return;
   }
 
-  // Budget checkpoint set
-  const budgetAfter = new Set(
-    (profile.budgetCheckpoints ?? []).map((b) => b.replace(/^after:/, ""))
-  );
+  const nodes = profile.nodes ?? [];
+  if (!nodes.length) {
+    pane.innerHTML = `<div style="color: var(--muted); font-size: 12px; padding: 4px 0;">No nodes in this profile.</div>`;
+    return;
+  }
 
-  for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i];
-    const card = document.createElement("div");
-    card.className = "graph-node";
+  const assignments  = profile.workerAssignments ?? {};
+  const workersList  = state.workers.list;
+  const slotsAll     = state.workers.slots;
 
-    // ID line
-    const idEl = document.createElement("div");
-    idEl.className = "graph-node-id";
-    idEl.textContent = node.id ?? "?";
+  pane.innerHTML = "";
+  let anySlotsFound = false;
+
+  for (const node of nodes) {
+    const deptSlots = slotsAll.filter((s) => s.department === node.id);
+    if (!deptSlots.length) continue;
+    anySlotsFound = true;
+
+    const section = document.createElement("div");
+    section.className = "slot-dept-section";
+
+    const label = document.createElement("div");
+    label.className = "slot-dept-label";
     const deptColor = state.deptColors[(node.id ?? "").toLowerCase()];
-    if (deptColor) idEl.style.color = deptColor;
-    card.appendChild(idEl);
+    if (deptColor) label.style.color = deptColor;
+    label.textContent = node.id;
+    section.appendChild(label);
 
-    // Runner filename
-    if (node.runner) {
-      const runnerEl = document.createElement("div");
-      runnerEl.className = "graph-node-runner";
-      runnerEl.textContent = node.runner.split("/").pop();
-      card.appendChild(runnerEl);
+    for (const slot of deptSlots) {
+      const slotKey         = slot.key;
+      const currentAssign   = assignments[slotKey] ?? slot.default;
+      const matchingWorkers = workersList.filter((w) => w.department === node.id && w.slotType === slot.id);
+
+      const row = document.createElement("div");
+      row.className = "slot-row";
+
+      const info = document.createElement("div");
+      info.className = "slot-info";
+      info.innerHTML = `<div class="slot-key">${escHtml(slotKey)}</div><div class="slot-desc">${escHtml(slot.description ?? "")}</div>`;
+      row.appendChild(info);
+
+      if (currentAssign !== slot.default) {
+        const badge = document.createElement("span");
+        badge.className = "slot-custom-badge";
+        badge.textContent = "custom";
+        row.appendChild(badge);
+      }
+
+      const select = document.createElement("select");
+      select.className = "slot-select";
+
+      if (!matchingWorkers.length) {
+        const opt = document.createElement("option");
+        opt.textContent = "(no workers for this slot)";
+        opt.disabled = true;
+        select.appendChild(opt);
+        select.disabled = true;
+      } else {
+        for (const w of matchingWorkers) {
+          const opt = document.createElement("option");
+          opt.value = w.id;
+          opt.textContent = w.id === slot.default ? `${w.name} (default)` : w.name;
+          if (w.id === currentAssign) opt.selected = true;
+          select.appendChild(opt);
+        }
+      }
+
+      select.addEventListener("change", () => {
+        updateWorkerAssignment(slotKey, select.value, slot.default);
+        const badge = row.querySelector(".slot-custom-badge");
+        if (select.value !== slot.default) {
+          if (!badge) {
+            const b = document.createElement("span");
+            b.className = "slot-custom-badge";
+            b.textContent = "custom";
+            row.insertBefore(b, select);
+          }
+        } else if (badge) {
+          badge.remove();
+        }
+      });
+
+      row.appendChild(select);
+      section.appendChild(row);
     }
 
-    // Badges: skip conditions, feedback loop, budget checkpoint
-    const badgesEl = document.createElement("div");
-    badgesEl.className = "graph-node-badges";
-    if (node.skipIf) {
-      badgesEl.innerHTML += `<span class="graph-badge skip" title="Skip if file exists: ${escHtml(node.skipIf)}">skip if file</span>`;
-    }
-    if (node.skipIfEvent) {
-      badgesEl.innerHTML += `<span class="graph-badge skip" title="Skip if event: ${escHtml(node.skipIfEvent)}">skip if: ${escHtml(node.skipIfEvent)}</span>`;
-    }
-    if (node.feedbackLoop) {
-      badgesEl.innerHTML += `<span class="graph-badge loop">↺ feedback loop</span>`;
-    }
-    if (budgetAfter.has(node.id)) {
-      badgesEl.innerHTML += `<span class="graph-badge budget">budget check</span>`;
-    }
-    if (badgesEl.innerHTML) card.appendChild(badgesEl);
+    pane.appendChild(section);
+  }
 
-    // Divider before memory
-    const mem = node.memory;
-    if (mem) {
-      card.appendChild(Object.assign(document.createElement("hr"), { className: "graph-node-divider" }));
-      const wikis = mem.readWiki?.length ? mem.readWiki.join(", ") : "none";
-      const runs  = mem.readRuns?.length ? mem.readRuns.join(", ") : "none";
-      const write = mem.write ?? "—";
-      const memEl = document.createElement("div");
-      memEl.className = "graph-node-mem";
-      memEl.innerHTML = `wiki in: ${escHtml(wikis)}<br>runs in: ${escHtml(runs)}<br>writes: ${escHtml(write)}`;
-      card.appendChild(memEl);
-    }
-
-    // Backward edges originating from this node
-    const backs = backEdges[node.id] ?? [];
-    if (backs.length) {
-      const backEl = document.createElement("div");
-      backEl.className = "graph-node-back";
-      backEl.innerHTML = backs
-        .map((e) => `↩ on: ${escHtml(e.on ?? "?")} → ${escHtml(e.to ?? "?")}`)
-        .join("<br>");
-      card.appendChild(backEl);
-    }
-
-    pane.appendChild(card);
-
-    // Arrow to next node
-    if (i < nodes.length - 1) {
-      const fwd = fwdEdges[node.id];
-      const arrow = document.createElement("div");
-      arrow.className = "graph-arrow";
-      arrow.innerHTML = `<span>↓</span>${fwd?.on ? `<span class="graph-arrow-cond">on: ${escHtml(fwd.on)}</span>` : ""}`;
-      pane.appendChild(arrow);
-    }
+  if (!anySlotsFound) {
+    pane.innerHTML = `<div style="color: var(--muted); font-size: 12px; padding: 4px 0;">No configurable slots found for this profile's departments.</div>`;
   }
 }
 
@@ -1395,6 +1822,7 @@ function renderMemoryView() {
     btn.textContent = dept.charAt(0).toUpperCase() + dept.slice(1);
     btn.addEventListener("click", () => {
       state.memory.activeDept = dept;
+      state.memory.editMode = false;
       deptRow.querySelectorAll(".cat-btn").forEach((b) =>
         b.classList.toggle("active", b.textContent.toLowerCase() === dept)
       );
@@ -1411,6 +1839,7 @@ function renderMemoryView() {
     btn.textContent = label;
     btn.addEventListener("click", () => {
       state.memory.activeTab = tab;
+      state.memory.editMode = false;
       tabRow.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b === btn));
       renderMemoryContent();
     });
@@ -1429,18 +1858,69 @@ function renderMemoryContent() {
 function renderMemoryWiki(dept) {
   const content = $("#memory-content");
   const deptData = state.memory.data?.data?.[dept];
-  if (!deptData?.wiki) {
+  const rawWiki = deptData?.wiki ?? "";
+
+  if (!rawWiki && !state.memory.editMode) {
     content.className = "";
     const label = dept.charAt(0).toUpperCase() + dept.slice(1);
     content.innerHTML = `
       <div class="empty-state">
         <span>No wiki entries yet for ${escHtml(label)}</span>
         <span class="hint">Craft knowledge accumulates here after completed runs. The factory learns over time.</span>
+        <button class="mem-edit-btn" style="margin-top:12px;">Edit</button>
       </div>`;
+    content.querySelector(".mem-edit-btn").addEventListener("click", () => {
+      state.memory.editMode = true;
+      renderMemoryWiki(dept);
+    });
     return;
   }
+
+  if (state.memory.editMode) {
+    content.className = "mem-wiki-edit";
+    content.innerHTML = `
+      <div class="mem-edit-toolbar">
+        <button class="mem-save-btn">Save</button>
+        <button class="mem-cancel-btn">Cancel</button>
+        <span class="mem-save-status"></span>
+      </div>
+      <textarea class="mem-wiki-editor" spellcheck="false">${escHtml(rawWiki)}</textarea>`;
+    content.querySelector(".mem-cancel-btn").addEventListener("click", () => {
+      state.memory.editMode = false;
+      renderMemoryWiki(dept);
+    });
+    content.querySelector(".mem-save-btn").addEventListener("click", async () => {
+      const text = content.querySelector(".mem-wiki-editor").value;
+      const status = content.querySelector(".mem-save-status");
+      status.textContent = "Saving…";
+      try {
+        const res = await fetch(`/api/memory/${dept}/wiki`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: text }),
+        });
+        if (!res.ok) throw new Error();
+        if (state.memory.data?.data?.[dept]) state.memory.data.data[dept].wiki = text;
+        state.memory.editMode = false;
+        renderMemoryWiki(dept);
+      } catch {
+        status.textContent = "Save failed.";
+        status.style.color = "var(--red)";
+      }
+    });
+    return;
+  }
+
   content.className = "mem-wiki";
-  content.innerHTML = marked.parse(deptData.wiki);
+  content.innerHTML = `
+    <div class="mem-edit-toolbar">
+      <button class="mem-edit-btn">Edit</button>
+    </div>
+    <div class="mem-wiki-body">${marked.parse(rawWiki)}</div>`;
+  content.querySelector(".mem-edit-btn").addEventListener("click", () => {
+    state.memory.editMode = true;
+    renderMemoryWiki(dept);
+  });
   content.querySelectorAll("pre code").forEach((el) => hljs.highlightElement(el));
 }
 
@@ -1475,6 +1955,7 @@ function renderMemoryRunLog(dept) {
       <span class="run-record-name">${escHtml(projectName)}</span>
       ${outcome ? `<span class="run-record-outcome">${escHtml(outcome)}</span>` : ""}
       <span class="run-record-ts">${escHtml(ts)}</span>
+      <button class="run-record-delete" title="Delete this record">✕</button>
     `;
 
     const body = document.createElement("div");
@@ -1488,10 +1969,26 @@ function renderMemoryRunLog(dept) {
       .join("");
     body.innerHTML = `<table class="run-field-table">${rows}</table>`;
 
-    header.addEventListener("click", () => {
+    header.addEventListener("click", (e) => {
+      if (e.target.closest(".run-record-delete")) return;
       const open = body.style.display !== "none";
       body.style.display = open ? "none" : "block";
       header.querySelector(".run-record-toggle").textContent = open ? "▶" : "▼";
+    });
+
+    header.querySelector(".run-record-delete").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const runId = record.runId;
+      if (!runId) return;
+      try {
+        const res = await fetch(`/api/memory/${dept}/runs/${runId}`, { method: "DELETE" });
+        if (!res.ok) throw new Error();
+        const deptData = state.memory.data?.data?.[dept];
+        if (deptData) deptData.runs = deptData.runs.filter((r) => (r.record ?? r).runId !== runId);
+        el.remove();
+      } catch {
+        // silently ignore — entry may not exist
+      }
     });
 
     el.appendChild(header);
@@ -1504,29 +2001,39 @@ function renderMemoryRunLog(dept) {
 // Factory Org
 // ---------------------------------------------------------------------------
 
-async function loadOrgData() {
+async function loadStaffData() {
   const sidebar = $("#org-sidebar");
   sidebar.innerHTML = `<div style="color:var(--muted);padding:12px 14px;font-size:12px;">Loading…</div>`;
   try {
-    const res = await fetch("/api/roles");
-    state.org.roles = await res.json();
+    const [rolesRes, workersRes] = await Promise.all([fetch("/api/roles"), fetch("/api/workers")]);
+    state.org.roles = await rolesRes.json();
+    state.workers.list = await workersRes.json();
   } catch {
     sidebar.innerHTML = `<div style="color:var(--red);padding:12px 14px;font-size:12px;">Failed to load</div>`;
     return;
   }
-  renderOrgSidebar();
-  const firstRoleId = state.org.roles[0]?.id ?? null;
-  if (!state.org.activeRoleId && firstRoleId) {
-    selectOrgRole(firstRoleId);
+  renderStaffSidebar();
+  if (!state.org.activeRoleId && !state.workers.activeId && state.org.roles[0]) {
+    selectOrgRole(state.org.roles[0].id);
   } else if (state.org.activeRoleId) {
     selectOrgRole(state.org.activeRoleId);
+  } else if (state.workers.activeId) {
+    const w = state.workers.list.find((x) => x.id === state.workers.activeId);
+    if (w) selectWorker(w);
   }
   await checkHrSession();
 }
 
-function renderOrgSidebar() {
+function renderStaffSidebar() {
   const sidebar = $("#org-sidebar");
   sidebar.innerHTML = "";
+
+  // Brain Roles section
+  const rolesHeader = document.createElement("div");
+  rolesHeader.className = "staff-section-header";
+  rolesHeader.textContent = "Brain Roles";
+  sidebar.appendChild(rolesHeader);
+
   for (const role of state.org.roles) {
     const item = document.createElement("div");
     item.className = "org-role-item" + (role.id === state.org.activeRoleId ? " active" : "");
@@ -1541,12 +2048,46 @@ function renderOrgSidebar() {
     sidebar.appendChild(item);
   }
 
-  const newBtn = document.createElement("button");
-  newBtn.className = "org-new-role-btn";
-  newBtn.textContent = state.org.session ? "Session in progress…" : "+ New Role";
-  newBtn.disabled = !!state.org.session;
-  newBtn.addEventListener("click", startCreateRole);
-  sidebar.appendChild(newBtn);
+  const newRoleBtn = document.createElement("button");
+  newRoleBtn.className = "org-new-role-btn";
+  newRoleBtn.textContent = state.org.session ? "Session in progress…" : "+ New Role";
+  newRoleBtn.disabled = !!state.org.session;
+  newRoleBtn.addEventListener("click", startCreateRole);
+  sidebar.appendChild(newRoleBtn);
+
+  // Workers section
+  const workersHeader = document.createElement("div");
+  workersHeader.className = "staff-section-header";
+  workersHeader.textContent = "Workers";
+  sidebar.appendChild(workersHeader);
+
+  const groups = {};
+  for (const w of state.workers.list) {
+    const key = w.department ? `${w.department}.${w.slotType}` : (w.slotType ?? "other");
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(w);
+  }
+
+  if (!state.workers.list.length) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "color:var(--muted);padding:8px 14px;font-size:12px;";
+    empty.textContent = "No workers yet.";
+    sidebar.appendChild(empty);
+  } else {
+    for (const [key, group] of Object.entries(groups)) {
+      const label = document.createElement("div");
+      label.className = "workers-slot-group";
+      label.textContent = key;
+      sidebar.appendChild(label);
+      for (const w of group) {
+        const item = document.createElement("div");
+        item.className = "worker-item" + (w.id === state.workers.activeId ? " active" : "");
+        item.innerHTML = `<span class="worker-item-name">${escHtml(w.name)}</span><span class="worker-item-slot">${escHtml(w.slotType ?? "")}</span>`;
+        item.addEventListener("click", () => selectWorker(w));
+        sidebar.appendChild(item);
+      }
+    }
+  }
 }
 
 async function startCreateRole() {
@@ -1608,7 +2149,7 @@ function openHrSession(data) {
   setOrgTab("hr");
 
   // Disable navigation buttons
-  renderOrgSidebar();
+  renderStaffSidebar();
   const interviewBtn = $("#org-interview-btn");
   interviewBtn.textContent = "Session in progress…";
   interviewBtn.disabled = true;
@@ -1645,13 +2186,15 @@ async function closeHrSession(reload) {
   hideHrInput();
   setOrgTab("brain");
   if (reload) {
-    await loadOrgData();
+    await loadStaffData();
   } else {
-    renderOrgSidebar(); // re-enable buttons
+    renderStaffSidebar();
+    const btn = $("#org-interview-btn");
     if (state.org.activeRoleId) {
-      const btn = $("#org-interview-btn");
       const role = state.org.roles?.find((r) => r.id === state.org.activeRoleId);
       if (role) { btn.textContent = role.hasBrain ? "Re-interview" : "Run Interview"; btn.disabled = false; }
+    } else {
+      btn.disabled = true;
     }
   }
 }
@@ -1723,7 +2266,8 @@ async function submitHrResponse(text) {
 
 function selectOrgRole(roleId) {
   state.org.activeRoleId = roleId;
-  $$(".org-role-item").forEach((el) => el.classList.toggle("active", el.dataset.roleId === roleId));
+  state.workers.activeId = null;
+  renderStaffSidebar();
   const role = state.org.roles?.find((r) => r.id === roleId);
   if (!role) return;
 
@@ -1737,6 +2281,18 @@ function selectOrgRole(roleId) {
   }
 
   renderOrgBrain(role);
+  setOrgTab("brain");
+}
+
+function selectWorker(worker) {
+  state.workers.activeId = worker.id;
+  state.org.activeRoleId = null;
+  renderStaffSidebar();
+  const btn = $("#org-interview-btn");
+  btn.disabled = true;
+  btn.textContent = state.org.session ? "Session in progress…" : "Run Interview";
+  renderWorkerDetail(worker);
+  setOrgTab("brain");
 }
 
 function setOrgTab(tab) {
@@ -1759,6 +2315,21 @@ function renderOrgBrain(role) {
   }
 }
 
+
+function renderWorkerDetail(worker) {
+  const pane = $("#org-brain-pane");
+  const prompt = worker.promptContent ?? "(no prompt)";
+  pane.className = "";
+  pane.innerHTML = `
+    <div class="worker-detail-header">
+      <span class="worker-detail-name">${escHtml(worker.name)}</span>
+      <span class="worker-slot-badge">${worker.department ? escHtml(worker.department) + "." : ""}${escHtml(worker.slotType ?? "")}</span>
+    </div>
+    <div class="worker-detail-desc">${escHtml(worker.description || "")}</div>
+    <div class="worker-prompt-label">System Prompt</div>
+    <div class="worker-prompt-content">${escHtml(prompt)}</div>
+  `;
+}
 
 // ---------------------------------------------------------------------------
 // Org Charts view
@@ -1877,7 +2448,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const newH = Math.max(90, Math.min(600, dragStart.h + (dragStart.y - e.clientY)));
     $("#chat-pane").style.height = newH + "px";
   });
-  document.addEventListener("mouseup", () => { dragStart = null; });
+  document.addEventListener("mouseup", () => { dragStart = null; inspectorDrag = null; });
+
+  // Inspector panel drag-to-resize
+  let inspectorDrag = null;
+  $("#inspector-resize").addEventListener("mousedown", (e) => {
+    inspectorDrag = { x: e.clientX, w: $("#profiles-inspector").offsetWidth };
+    e.preventDefault();
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (!inspectorDrag) return;
+    const newW = Math.max(180, Math.min(520, inspectorDrag.w + (inspectorDrag.x - e.clientX)));
+    $("#profiles-inspector").style.width = newW + "px";
+  });
 
   // Profiles
   $$(".profiles-mode-btn").forEach((btn) => {
@@ -1885,13 +2468,63 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#profiles-save-btn").addEventListener("click", saveProfile);
   $("#profiles-editor").addEventListener("input", () => {
-    renderProfileGraph($("#profiles-editor").value);
+    state.profiles.content = $("#profiles-editor").value;
+  });
+
+  $("#inspector-close").addEventListener("click", () => {
+    hideNodeInspector();
+    const df = state.profiles.drawflow;
+    if (df && df.node_selected) {
+      df.node_selected.classList.remove("selected");
+      df.node_selected = null;
+    }
+  });
+
+  $("#inspector-budget-check").addEventListener("change", (e) => {
+    const deptName = $("#profiles-inspector").dataset.deptName;
+    if (!deptName) return;
+
+    let profile;
+    try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { return; }
+
+    const checkpoints = profile.budgetCheckpoints ?? [];
+    const key = `after:${deptName}`;
+    if (e.target.checked) {
+      if (!checkpoints.includes(key)) checkpoints.push(key);
+    } else {
+      const idx = checkpoints.indexOf(key);
+      if (idx !== -1) checkpoints.splice(idx, 1);
+    }
+    profile.budgetCheckpoints = checkpoints.length > 0 ? checkpoints : undefined;
+    if (!profile.budgetCheckpoints) delete profile.budgetCheckpoints;
+
+    state.profiles.content = JSON.stringify(profile, null, 2);
+    $("#profiles-editor").value = state.profiles.content;
+    $("#profiles-save-btn").disabled = false;
+
+    // Re-render the affected node's content from the updated profile
+    const df = state.profiles.drawflow;
+    if (df) {
+      const updatedProfile = JSON.parse(state.profiles.content);
+      const nodeDef = (updatedProfile.nodes ?? []).find(n => n.id === deptName);
+      if (nodeDef) {
+        const exported = df.export();
+        for (const [numId, node] of Object.entries(exported?.drawflow?.Home?.data ?? {})) {
+          if (node.name !== deptName) continue;
+          const contentEl = document.querySelector(`#node-${numId} .drawflow_content_node`);
+          if (contentEl) {
+            contentEl.innerHTML = buildNodeHtml(nodeDef, state.profiles.depts[deptName], updatedProfile);
+          }
+          break;
+        }
+      }
+    }
   });
 
   $("#memory-refresh-btn").addEventListener("click", loadMemoryData);
 
-  // Roles
-  $("#org-refresh-btn").addEventListener("click", () => loadOrgData());
+  // Factory Staff
+  $("#staff-refresh-btn").addEventListener("click", () => loadStaffData());
 
   // Org Charts
   $("#orgcharts-refresh-btn").addEventListener("click", () => loadOrgChartsData(state.orgCharts.activeProfile));
@@ -1925,6 +2558,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#org-hr-field").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitHrResponse(); }
+  });
+
+  $("#staff-new-worker-btn").addEventListener("click", async () => {
+    const btn = $("#staff-new-worker-btn");
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    try {
+      const res = await fetch("/api/workers/create", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error ?? "Failed to start worker design session.");
+        return;
+      }
+      await checkHrSession();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "+ New Worker";
+    }
   });
 
   // Collapsible sections

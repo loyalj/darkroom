@@ -1,0 +1,34 @@
+{
+  "id": "design",
+  "name": "Design",
+  "description": "Produces functional and experience specs from user requirements.",
+  "runner": "departments/design/runner.js",
+  "inputs":  [],
+  "outputs": ["design-spec", "review-spec", "runtime-spec", "factory-manifest"],
+  "slots": [
+    {
+      "id": "spec-writer",
+      "name": "Spec Writer",
+      "description": "Writes the functional and experience specification documents.",
+      "type": "spec-writer",
+      "multiple": false,
+      "default": "default-spec-writer"
+    },
+    {
+      "id": "interviewer",
+      "name": "Design Interviewer",
+      "description": "Conducts the functional requirements interview with the user.",
+      "type": "interviewer",
+      "multiple": false,
+      "default": "default-interviewer"
+    },
+    {
+      "id": "experience-interviewer",
+      "name": "Experience Interviewer",
+      "description": "Conducts the UX/experience requirements interview with the user.",
+      "type": "experience-interviewer",
+      "multiple": false,
+      "default": "default-experience-interviewer"
+    }
+  ]
+}

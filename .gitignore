@@ -3,6 +3,9 @@ runs/
 accounts/
 memory/
 
+# Org session transcripts
+org/sessions/
+
 # Brain files (personal decision profile — do not commit)
 brain.md
 brain-config.json

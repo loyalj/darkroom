@@ -1,0 +1,10 @@
+{
+  "id": "default-interviewer",
+  "name": "Default Design Interviewer",
+  "description": "Conducts the functional requirements interview with the operator.",
+  "slotType": "interviewer",
+  "department": "design",
+  "builtin": true,
+  "sourceFile": "departments/design/interviewer.md",
+  "created": "2025-01-01T00:00:00.000Z"
+}

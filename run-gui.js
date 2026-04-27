@@ -19,7 +19,8 @@ const path = require("path");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
 
-const org = require("./lib/org");
+const org     = require("./lib/org");
+const workers = require("./lib/workers");
 
 const activeProcesses  = new Map(); // runId → pid (factory runs only)
 const activeHrSession  = { runId: null, pid: null, type: null, roleId: null };
@@ -171,13 +172,16 @@ function runSummary(id) {
   const profileName = startEvent?.profile ?? "full";
   const lastEvent = logEvents[logEvents.length - 1];
   const complete = logEvents.some((e) => e.event === "pipeline-complete");
+  const aborted  = !complete && logEvents.some((e) => e.event === "aborted");
   const shipped = logEvents.some((e) => e.event === "ship-approved" || e.event === "ship-approved-override");
   const blocked = logEvents.some((e) => e.event === "ship-rejected-no-ship" || e.event === "ship-rejected");
   const secApproved = logEvents.some((e) => e.event === "security-approved");
   const secBlocked = logEvents.some((e) => e.event === "security-rejected");
 
   let verdict = "running";
-  if (complete) {
+  if (aborted) {
+    verdict = "failed";
+  } else if (complete) {
     if (secBlocked) verdict = "blocked";
     else if (secApproved && shipped) verdict = "shipped";
     else if (blocked) verdict = "blocked";
@@ -304,6 +308,7 @@ function deriveState(logEvents) {
   let currentStep = "Initializing";
   let loops = 0;
   let verdict = null;
+  let failReason = null;
 
   for (const ev of logEvents) {
     const { phase, event: e } = ev;
@@ -332,6 +337,12 @@ function deriveState(logEvents) {
       else if (e === "copy-approved") currentStep = "Build · Verification";
       else if (e === "verification-complete") currentStep = "Build · Packaging";
       else if (e === "build-division-complete") { phases.build = "done"; currentStep = "Build · Complete"; }
+      else if (e === "build-blocked") {
+        phases.build = "failed";
+        verdict = "failed";
+        failReason = "All build tasks exhausted retries";
+        currentStep = "Build · Tasks Failed";
+      }
     } else if (phase === "review") {
       if (phases.review === "pending") phases.review = "active";
       if (e === "start") { phases.review = "active"; currentStep = "Review · Running Scenarios"; }
@@ -350,10 +361,17 @@ function deriveState(logEvents) {
     } else if (phase === "factory") {
       if (e === "division-complete" && ev.loop) loops = Math.max(loops, ev.loop);
       if (e === "pipeline-complete") { verdict = verdict ?? "complete"; currentStep = "Pipeline Complete"; }
+      if (e === "aborted" && verdict !== "complete" && verdict !== "shipped" && verdict !== "blocked") {
+        const div = ev.division;
+        if (div && phases[div] !== undefined) phases[div] = "failed";
+        verdict = "failed";
+        failReason = ev.reason && ev.reason !== "Exiting." ? ev.reason : null;
+        currentStep = div ? `${div.charAt(0).toUpperCase() + div.slice(1)} · Failed` : "Pipeline Failed";
+      }
     }
   }
 
-  return { phases, currentStep, loops, verdict, profileNodes };
+  return { phases, currentStep, loops, verdict, profileNodes, failReason };
 }
 
 // ---------------------------------------------------------------------------
@@ -376,10 +394,11 @@ function mostActiveRunId() {
 
   if (!newest) return null;
 
-  // Only return the run if it hasn't completed yet
+  // Only return the run if it hasn't reached a terminal state
   const logEvents = parseJsonLines(path.join(RUNS_DIR, newest, "log.jsonl"));
   const isComplete = logEvents.some((e) => e.event === "pipeline-complete");
-  return isComplete ? null : newest;
+  const isAborted  = !isComplete && logEvents.some((e) => e.event === "aborted");
+  return (isComplete || isAborted) ? null : newest;
 }
 
 // ---------------------------------------------------------------------------
@@ -757,9 +776,24 @@ app.put("/api/profiles/:name", (req, res) => {
 
 app.get("/api/departments", (req, res) => {
   const p = path.join(__dirname, "departments.json");
-  if (!fs.existsSync(p)) return res.json({});
-  try { res.json(JSON.parse(fs.readFileSync(p, "utf8"))); }
-  catch { res.json({}); }
+  let base = {};
+  if (fs.existsSync(p)) {
+    try { base = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
+  }
+  // Merge typed inputs/outputs from each dept's schema.json (Phase 9)
+  for (const id of Object.keys(base)) {
+    const schemaPath = path.join(__dirname, "departments", id, "schema.json");
+    if (fs.existsSync(schemaPath)) {
+      try {
+        const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
+        base[id].inputs      = schema.inputs      ?? [];
+        base[id].outputs     = schema.outputs     ?? [];
+        base[id].slots       = schema.slots       ?? [];
+        base[id].description = schema.description ?? "";
+      } catch {}
+    }
+  }
+  res.json(base);
 });
 
 // ---------------------------------------------------------------------------
@@ -776,17 +810,35 @@ app.post("/api/launch", (req, res) => {
     return res.status(409).json({ error: "Run is already in progress", runId });
   }
 
-  const args = [path.join(__dirname, "run-factory.js"), "--run-id", runId];
+  // When resuming an existing run, always inherit the original run's profile and mode
+  // from its log — never let the launch UI override them.
+  let resolvedProfile = profile ?? "full";
+  let resolvedMode = mode;
+  if (resumeId) {
+    const logPath = path.join(RUNS_DIR, resumeId, "log.jsonl");
+    if (fs.existsSync(logPath)) {
+      const lines = fs.readFileSync(logPath, "utf8").trim().split("\n");
+      for (const line of lines) {
+        try {
+          const ev = JSON.parse(line);
+          if (ev.phase === "factory" && ev.event === "start") {
+            if (ev.profile) resolvedProfile = ev.profile;
+            if (ev.mode)    resolvedMode    = ev.mode;
+            break;
+          }
+        } catch {}
+      }
+    }
+  }
 
-  // Always pass --profile when provided; for plain resume (no profile) let factory infer from existing state
-  const resolvedProfile = profile ?? (resumeId ? null : "full");
-  if (resolvedProfile) args.push("--profile", resolvedProfile);
+  const args = [path.join(__dirname, "run-factory.js"), "--run-id", runId];
+  args.push("--profile", resolvedProfile);
 
   if (!resumeId) {
     if (tag) args.push("--tag", tag);
     if (stopAfter) args.push("--stop-after", stopAfter);
   }
-  if (mode === "auto") args.push("--mode", "auto");
+  if (resolvedMode === "auto") args.push("--mode", "auto");
   if (caveman) args.push("--caveman");
 
   try {
@@ -831,6 +883,38 @@ app.get("/api/roles", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Workers
+// ---------------------------------------------------------------------------
+
+app.get("/api/workers", (req, res) => {
+  try {
+    workers.reloadWorkers();
+    const all = workers.loadWorkers();
+    const result = Object.values(all).map((w) => ({
+      id:           w.id,
+      name:         w.name,
+      description:  w.description,
+      slotType:     w.slotType,
+      department:   w.department,
+      created:      w.created,
+      hasPrompt:    workers.promptExists(w),
+      promptContent: workers.promptExists(w) ? workers.readPrompt(w) : null,
+    }));
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/workers/slots", (req, res) => {
+  try {
+    res.json(workers.listSlotTypes());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Org chart
 // ---------------------------------------------------------------------------
 
@@ -863,8 +947,19 @@ app.post("/api/org/roles/create", (req, res) => {
 
   const runId = crypto.randomBytes(4).toString("hex");
   spawnHrSession(
-    [path.join(__dirname, "run-hr.js"), "--create-role", "--run-id", runId],
+    [path.join(__dirname, "departments", "hr", "run.js"), "--create-role", "--run-id", runId],
     runId, "create-role", null, res
+  );
+});
+
+app.post("/api/workers/create", (req, res) => {
+  if (activeHrSession.runId && activeHrSession.pid && isAlive(activeHrSession.pid))
+    return res.status(409).json({ error: "An HR session is already running", runId: activeHrSession.runId });
+
+  const runId = crypto.randomBytes(4).toString("hex");
+  spawnHrSession(
+    [path.join(__dirname, "departments", "hr", "run.js"), "--create-worker", "--run-id", runId],
+    runId, "create-worker", null, res
   );
 });
 
@@ -881,7 +976,7 @@ app.post("/api/org/:id/interview", (req, res) => {
 
   const runId = crypto.randomBytes(4).toString("hex");
   spawnHrSession(
-    [path.join(__dirname, "run-hr.js"), "--role", id, "--run-id", runId],
+    [path.join(__dirname, "departments", "hr", "run.js"), "--role", id, "--run-id", runId],
     runId, "interview", id, res
   );
 });
@@ -1027,6 +1122,28 @@ app.get("/api/org", (req, res) => {
 // ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
+
+app.put("/api/memory/:dept/wiki", express.json(), (req, res) => {
+  const { dept } = req.params;
+  const { content } = req.body ?? {};
+  if (!["design", "build", "review", "security"].includes(dept)) return res.status(400).json({ error: "Unknown dept" });
+  if (typeof content !== "string") return res.status(400).json({ error: "content required" });
+  const wikiPath = path.join(__dirname, "memory", dept, "wiki.md");
+  fs.mkdirSync(path.dirname(wikiPath), { recursive: true });
+  fs.writeFileSync(wikiPath, content, "utf8");
+  res.json({ ok: true });
+});
+
+app.delete("/api/memory/:dept/runs/:runId", (req, res) => {
+  const { dept, runId } = req.params;
+  if (!["design", "build", "review", "security"].includes(dept)) return res.status(400).json({ error: "Unknown dept" });
+  const runsPath = path.join(__dirname, "memory", dept, "runs.jsonl");
+  if (!fs.existsSync(runsPath)) return res.status(404).json({ error: "Not found" });
+  const lines = fs.readFileSync(runsPath, "utf8").trim().split("\n").filter(Boolean);
+  const filtered = lines.filter((l) => { try { return JSON.parse(l).runId !== runId; } catch { return true; } });
+  fs.writeFileSync(runsPath, filtered.join("\n") + (filtered.length ? "\n" : ""), "utf8");
+  res.json({ ok: true });
+});
 
 app.get("/api/memory", (req, res) => {
   const memoryDir = path.join(__dirname, "memory");

@@ -1,0 +1,10 @@
+{
+  "id": "default-tester",
+  "name": "Default Tester",
+  "description": "Executes review scenarios and edge cases against the artifact.",
+  "slotType": "tester",
+  "department": "review",
+  "builtin": true,
+  "sourceFile": "departments/review/explorer.md",
+  "created": "2025-01-01T00:00:00.000Z"
+}

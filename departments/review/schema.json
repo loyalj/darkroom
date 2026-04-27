@@ -1,0 +1,26 @@
+{
+  "id": "review",
+  "name": "Review",
+  "description": "Tests the artifact against scenarios and edge cases; issues a ship/no-ship verdict.",
+  "runner": "departments/review/runner.js",
+  "inputs":  ["review-spec", "runtime-spec", "factory-manifest", "build-artifact"],
+  "outputs": ["event:ship-approved", "event:ship-rejected"],
+  "slots": [
+    {
+      "id": "scenario-analyst",
+      "name": "Scenario Analyst",
+      "description": "Designs the review scenario plan.",
+      "type": "scenario-analyst",
+      "multiple": false,
+      "default": "default-scenario-analyst"
+    },
+    {
+      "id": "tester",
+      "name": "Tester",
+      "description": "Executes scenarios and edge cases against the artifact.",
+      "type": "tester",
+      "multiple": false,
+      "default": "default-tester"
+    }
+  ]
+}

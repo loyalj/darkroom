@@ -11,30 +11,32 @@
  *   Phase 5: Verification (with retry budget)
  *   Phase 6: Packaging
  *
- * Reads from runs/{run-id}/handoff/ (design division outputs).
+ * Reads inputs from io-context.json (resolved from type registry; falls back to handoff/ paths).
  * Writes to runs/{run-id}/build/ and runs/{run-id}/artifact/.
  *
  * Usage:
- *   node run-build.js --run-id <id>
+ *   node departments/build/runner.js --run-id <id>
  */
 
 const fs = require("fs");
 const path = require("path");
-const { createInteraction } = require("../io/interaction");
-const { cliAdapter } = require("../io/adapters/cli");
-const { fileAdapter } = require("../io/adapters/file");
-const { createPhaseDisplay, createPlainDisplay, agentStream, A, formatElapsed, setRunDir } = require("../lib/display");
-const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
-const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, writeDecision, hr, runLockableInterview, collectSourceFiles } = require("../lib/runner-utils");
-const { claudeRaw, claudeCall, claudeTurn, claudeToolCallAsync } = require("../adapters/claude-cli");
-const { runReflector } = require("../lib/memory");
+const { createInteraction } = require("../../io/interaction");
+const { cliAdapter } = require("../../io/adapters/cli");
+const { fileAdapter } = require("../../io/adapters/file");
+const { createPhaseDisplay, createPlainDisplay, agentStream, A, formatElapsed, setRunDir } = require("../../lib/display");
+const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../../lib/token-log");
+const { readFile, writeFile, readJSON, writeJSON, fileExists, buildSystemPrompt, clipForDisplay, logEvent, writeDecision, hr, runLockableInterview, collectSourceFiles } = require("../../lib/runner-utils");
+const { claudeRaw, claudeCall, claudeTurn, claudeToolCallAsync } = require("../../adapters/claude-cli");
+const { runReflector } = require("../../lib/memory");
+const workers = require("../../lib/workers");
+const types = require("../../lib/types");
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const AGENTS_DIR = path.join(__dirname, "..", "agents");
-const RUNS_DIR = path.join(__dirname, "..", "runs");
+const AGENTS_DIR = path.join(__dirname, "..", "..", "agents");
+const RUNS_DIR = path.join(__dirname, "..", "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md");
 const RETRY_BUDGET = 3;
@@ -48,7 +50,7 @@ let memoryContext = null;
 // ---------------------------------------------------------------------------
 
 const ARCHITECT_AUTO_MAX_TURNS = 6;
-const BRAIN_PATH = path.join(__dirname, "..", "org/ceo/brain.md");
+const BRAIN_PATH = path.join(__dirname, "..", "..", "org/ceo/brain.md");
 
 async function runArchitectAutoLoop(runDir, architectSystemPrompt, history, firstAgentTurn, transcriptPath, buildSpec, factoryManifest, executeLock, display) {
   const brainContent = fileExists(BRAIN_PATH) ? readFile(BRAIN_PATH) : "";
@@ -148,7 +150,7 @@ async function runArchitectInterview(io, runDir, buildSpec, factoryManifest) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "architect.md")),
+    workers.resolveSlotPrompt(runDir, "build.architect"),
     `## Build Spec\n\n${buildSpec}`,
     `## Factory Manifest\n\n${JSON.stringify(factoryManifest, null, 2)}`,
     memoryContext
@@ -165,7 +167,7 @@ async function runArchitectInterview(io, runDir, buildSpec, factoryManifest) {
     const lockPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "build", "architect.md")),
+      workers.resolveSlotPrompt(runDir, "build.architect"),
       `## Build Spec\n\n${buildSpec}`,
       `## Factory Manifest\n\n${JSON.stringify(factoryManifest, null, 2)}`,
       `## Interview transcript\n\n${readFile(transcriptPath)}`,
@@ -258,7 +260,7 @@ async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, 
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "implementation.md")),
+    workers.resolveSlotPrompt(runDir, "build.coder"),
     memoryContext
   );
 
@@ -394,7 +396,7 @@ async function runIntegration(buildDir, buildSpec, architecturePlan, runDir) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "integration.md")),
+    readFile(path.join(__dirname, "integration.md")),
     memoryContext
   );
 
@@ -434,7 +436,7 @@ async function runCopyWriter(io, buildDir, buildSpec, runDir) {
     const systemPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "build", "copywriter.md")),
+      workers.resolveSlotPrompt(runDir, "build.copywriter"),
       memoryContext
     );
 
@@ -474,7 +476,7 @@ async function runCopyWriter(io, buildDir, buildSpec, runDir) {
       const systemPrompt = buildSystemPrompt(
         readFile(SHARED_CONVENTIONS),
         readFile(SHARED_OUTPUT_FORMATS),
-        readFile(path.join(AGENTS_DIR, "build", "copywriter.md")),
+        workers.resolveSlotPrompt(runDir, "build.copywriter"),
         memoryContext
       );
 
@@ -533,7 +535,7 @@ async function runVerification(buildDir, buildSpec, runDir) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "verification.md")),
+    readFile(path.join(__dirname, "verification.md")),
     memoryContext
   );
 
@@ -629,7 +631,7 @@ async function runFixAgent(buildDir, buildSpecPath, verificationReport, humanFee
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "fix.md")),
+    workers.resolveSlotPrompt(runDir, "build.coder"),
     memoryContext
   );
 
@@ -667,7 +669,7 @@ async function runPackager(buildDir, artifactDir, runtimeSpec, runDir) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "packager.md")),
+    workers.resolveSlotPrompt(runDir, "build.packager"),
     memoryContext
   );
 
@@ -753,7 +755,7 @@ async function runIncomingFixMode(io, buildDir, buildSpecPath, incomingFailures,
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "build", "fix.md")),
+    workers.resolveSlotPrompt(runDir, "build.coder"),
     memoryContext
   );
 
@@ -794,7 +796,7 @@ async function main() {
   const args = process.argv.slice(2);
   const runIdIndex = args.indexOf("--run-id");
   if (runIdIndex < 0 || !args[runIdIndex + 1]) {
-    console.error("Usage: node run-build.js --run-id <id>");
+    console.error("Usage: node departments/build/runner.js --run-id <id>");
     process.exit(1);
   }
 
@@ -804,22 +806,27 @@ async function main() {
   const io = process.env.DARK_ROOM_IO === "file"
     ? createInteraction(fileAdapter(runDir))
     : createInteraction(cliAdapter());
-  const handoffDir = path.join(runDir, "handoff");
   const buildDir = path.join(runDir, "build");
-  const artifactDir = path.join(runDir, "artifact");
 
-  // Verify handoff artifacts exist
-  for (const f of ["build-spec.md", "factory-manifest.json", "runtime-spec.md"]) {
-    if (!fileExists(path.join(handoffDir, f))) {
-      console.error(`Missing handoff artifact: ${f}`);
-      console.error("Run the design division first: node run-design.js");
+  const ioCtxPath = path.join(runDir, "io-context.json");
+  const inputs = fileExists(ioCtxPath)
+    ? readJSON(ioCtxPath).inputs
+    : types.resolve(["design-spec", "runtime-spec", "factory-manifest", "build-artifact"], runDir);
+  const artifactDir = path.dirname(inputs["build-artifact"]);
+
+  // Verify required inputs exist
+  for (const [typeName, filePath] of Object.entries(inputs)) {
+    if (typeName === "build-artifact") continue;
+    if (!fileExists(filePath)) {
+      console.error(`Missing required input "${typeName}": ${filePath}`);
+      console.error("Run the design division first: node departments/design/runner.js");
       process.exit(1);
     }
   }
 
-  const buildSpec = readFile(path.join(handoffDir, "build-spec.md"));
-  const runtimeSpec = readFile(path.join(handoffDir, "runtime-spec.md"));
-  const factoryManifest = readJSON(path.join(handoffDir, "factory-manifest.json"));
+  const buildSpec = readFile(inputs["design-spec"]);
+  const runtimeSpec = readFile(inputs["runtime-spec"]);
+  const factoryManifest = readJSON(inputs["factory-manifest"]);
 
   const memCtxPath = path.join(runDir, "memory-context.md");
   memoryContext = fileExists(memCtxPath) ? readFile(memCtxPath) : null;
@@ -835,7 +842,7 @@ async function main() {
     logEvent(runDir, { phase: "build", event: "start" });
   }
 
-  const buildSpecPath = path.join(handoffDir, "build-spec.md");
+  const buildSpecPath = inputs["design-spec"];
 
   // Check for incoming failure reports from review or security divisions.
   // If present and a prior build exists, skip straight to fix mode.
@@ -873,7 +880,7 @@ async function main() {
     console.log(`  Run: ${id}`);
     console.log(`  Artifact: runs/${id}/artifact/`);
     console.log(`${hr()}\n`);
-    console.log("Proceed to review: node run-review.js --run-id " + id + "\n");
+    console.log("Proceed to review: node departments/review/runner.js --run-id " + id + "\n");
     logEvent(runDir, { phase: "build", event: "build-division-complete", mode: "fix" });
     io.close();
     return;
@@ -918,7 +925,7 @@ async function main() {
   console.log(`  Run: ${id}`);
   console.log(`  Artifact: runs/${id}/artifact/`);
   console.log(`${hr()}\n`);
-  console.log("Proceed to review: node run-review.js --run-id " + id + "\n");
+  console.log("Proceed to review: node departments/review/runner.js --run-id " + id + "\n");
 
   logEvent(runDir, { phase: "build", event: "build-division-complete" });
   io.close();

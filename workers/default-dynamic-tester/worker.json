@@ -1,0 +1,10 @@
+{
+  "id": "default-dynamic-tester",
+  "name": "Default Dynamic Tester",
+  "description": "Performs dynamic and runtime security testing.",
+  "slotType": "dynamic-tester",
+  "department": "security",
+  "builtin": true,
+  "sourceFile": "departments/security/dynamic-tester.md",
+  "created": "2025-01-01T00:00:00.000Z"
+}

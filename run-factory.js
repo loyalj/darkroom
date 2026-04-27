@@ -22,7 +22,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { fileExists, logEvent, readFile, writeFile, buildSystemPrompt, runLockableInterview } = require("./lib/runner-utils");
-const { claudeCall } = require("./adapters/claude-cli");
+const { claudeCall, claudeCallAsync } = require("./adapters/claude-cli");
 const { createInteraction } = require("./io/interaction");
 const { cliAdapter } = require("./io/adapters/cli");
 const { fileAdapter } = require("./io/adapters/file");
@@ -126,16 +126,23 @@ async function runRunBrainInterview(runDir) {
 
   if (mode === "auto") {
     const display = createPhaseDisplay("Leadership", "Run Brain", "", "generating...");
-    const result = claudeCall(
-      systemPrompt,
-      "Generate the locked run brain now. All necessary context is in the specs and the global brain. Produce the locked output as specified in your output format.",
-      (u) => logTokens("Run Brain (auto)", u)
-    );
+    let result;
+    try {
+      result = await claudeCallAsync(
+        systemPrompt,
+        "Generate the locked run brain now. All necessary context is in the specs and the global brain. Produce the locked output as specified in your output format.",
+        (u) => logTokens("Run Brain (auto)", u)
+      );
+    } catch (err) {
+      logEvent(runDir, { phase: "leadership", event: "run-brain-error", error: String(err.message ?? err) });
+      display.fail("run brain call failed: " + String(err.message ?? err));
+      throw err;
+    }
     const lockedOutput = result.output ?? result;
     if (!lockedOutput?.runBrain) {
-      display.stop();
-      console.error("Auto run brain generation did not produce valid output:");
-      console.error(JSON.stringify(result, null, 2));
+      const msg = "run brain produced invalid output: " + JSON.stringify(result).slice(0, 200);
+      logEvent(runDir, { phase: "leadership", event: "run-brain-error", error: msg });
+      display.fail(msg);
       process.exit(1);
     }
     writeFile(runBrainPath, lockedOutput.runBrain);
@@ -269,7 +276,7 @@ async function main() {
     console.log(`  ${A.green("✓")}  Org brains ready\n`);
   } else if (mode === "auto") {
     console.log(`  ${A.yellow("⚠")}  No brain found for: ${missingBrains.map((r) => r.name).join(", ")}`);
-    console.log(`  ${A.dim("Run HR first to build org brains (node run-hr.js --role <id>).")}`);
+    console.log(`  ${A.dim("Run HR first to build org brains (node departments/hr/run.js --role <id>).")}`);
     console.log(`  ${A.dim("Auto-mode decisions will require human input until brains are set up.\n")}`);
   } else {
     console.log(`  ${A.dim("ℹ")}  No org brains set up — run HR to enable auto-mode decisions\n`);
@@ -278,6 +285,10 @@ async function main() {
   // ── Graph executor ───────────────────────────────────────────────────────
 
   const profile = JSON.parse(fs.readFileSync(path.join(__dirname, "profiles", `${profileName}.json`), "utf8"));
+
+  // Write worker assignments for dept runners to resolve slot prompts at runtime.
+  const assignPath = path.join(runDir, "worker-assignments.json");
+  writeFile(assignPath, JSON.stringify(profile.workerAssignments ?? {}, null, 2));
 
   await runGraph(profile, {
     runId,

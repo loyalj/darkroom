@@ -1,0 +1,22 @@
+{
+  "id": "hr",
+  "name": "HR",
+  "description": "Staffs the factory: conducts brain interviews for leadership roles and develops worker agents.",
+  "runner": "departments/hr/run.js",
+  "slots": [
+    {
+      "id": "brain-interviewer",
+      "name": "Brain Interviewer",
+      "description": "Conducts the structured interview to build a leadership role brain profile.",
+      "type": "brain-interviewer",
+      "multiple": false
+    },
+    {
+      "id": "role-designer",
+      "name": "Role Designer",
+      "description": "Designs new org roles and worker agent specifications.",
+      "type": "role-designer",
+      "multiple": false
+    }
+  ]
+}

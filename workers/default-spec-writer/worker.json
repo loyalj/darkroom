@@ -1,0 +1,10 @@
+{
+  "id": "default-spec-writer",
+  "name": "Default Spec Writer",
+  "description": "Writes functional and experience specification documents from interview transcripts.",
+  "slotType": "spec-writer",
+  "department": "design",
+  "builtin": true,
+  "sourceFile": "departments/design/spec-writer.md",
+  "created": "2025-01-01T00:00:00.000Z"
+}

@@ -12,28 +12,31 @@
  * On BLOCK or human rejection: writes remediation requests for build division.
  *
  * Usage:
- *   node run-security.js --run-id <id>
+ *   node departments/security/runner.js --run-id <id>
  */
 
 const fs = require("fs");
 const path = require("path");
-const { createInteraction } = require("../io/interaction");
-const { cliAdapter } = require("../io/adapters/cli");
-const { fileAdapter } = require("../io/adapters/file");
-const { createPhaseDisplay, agentStream, setRunDir } = require("../lib/display");
-const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
-const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, collectSourceFiles, extractCompact } = require("../lib/runner-utils");
-const { claudeCall } = require("../adapters/claude-cli");
-const { runReflector } = require("../lib/memory");
+const { createInteraction } = require("../../io/interaction");
+const { cliAdapter } = require("../../io/adapters/cli");
+const { fileAdapter } = require("../../io/adapters/file");
+const { createPhaseDisplay, agentStream, setRunDir } = require("../../lib/display");
+const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../../lib/token-log");
+const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, collectSourceFiles, extractCompact } = require("../../lib/runner-utils");
+const { claudeCall } = require("../../adapters/claude-cli");
+const { runReflector } = require("../../lib/memory");
+const workers = require("../../lib/workers");
+const types = require("../../lib/types");
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const AGENTS_DIR = path.join(__dirname, "..", "agents");
-const RUNS_DIR = path.join(__dirname, "..", "runs");
+const AGENTS_DIR = path.join(__dirname, "..", "..", "agents");
+const RUNS_DIR = path.join(__dirname, "..", "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md");
+let _runDir = null;
 
 // Memory context — loaded once at startup from memory-context.md written by graph executor.
 let memoryContext = null;
@@ -63,7 +66,7 @@ async function runStaticAnalyst(securityDir, artifactDir, runtimeSpec, caveman) 
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "security", "static-analyst.md")),
+    workers.resolveSlotPrompt(_runDir, "security.static-analyst"),
     caveman ? readFile(path.join(AGENTS_DIR, "caveman", "static-analysis.md")) : null,
     memoryContext
   );
@@ -115,7 +118,7 @@ async function runDynamicTester(securityDir, artifactDir, runtimeSpec, staticRep
   const testerPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "security", "dynamic-tester.md")),
+    workers.resolveSlotPrompt(_runDir, "security.dynamic-tester"),
     caveman ? readFile(path.join(AGENTS_DIR, "caveman", "dynamic-testing.md")) : null,
     memoryContext
   );
@@ -157,7 +160,7 @@ async function runVerdictAgent(securityDir, staticReport, dynamicReport, caveman
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "security", "verdict.md")),
+    readFile(path.join(__dirname, "verdict.md")),
     memoryContext
   );
 
@@ -300,35 +303,37 @@ async function main() {
   const args = process.argv.slice(2);
   const runIdIndex = args.indexOf("--run-id");
   if (runIdIndex < 0 || !args[runIdIndex + 1]) {
-    console.error("Usage: node run-security.js --run-id <id>");
+    console.error("Usage: node departments/security/runner.js --run-id <id>");
     process.exit(1);
   }
 
   const id = args[runIdIndex + 1];
   const caveman = args.includes("--caveman") || process.env.FACTORY_CAVEMAN === "1";
   const runDir = path.join(RUNS_DIR, id);
+  _runDir = runDir;
   setRunDir(runDir);
-  const handoffDir = path.join(runDir, "handoff");
-  const artifactDir = path.join(runDir, "artifact");
   const securityDir = path.join(runDir, "security");
 
   fs.mkdirSync(securityDir, { recursive: true });
 
-  // Verify inputs
-  if (!fileExists(artifactDir)) {
-    console.error(`Artifact directory not found: ${artifactDir}`);
-    console.error("Run the build division first: node run-build.js --run-id <id>");
-    process.exit(1);
+  const ioCtxPath = path.join(runDir, "io-context.json");
+  const inputs = fileExists(ioCtxPath)
+    ? readJSON(ioCtxPath).inputs
+    : types.resolve(["runtime-spec", "factory-manifest", "build-artifact"], runDir);
+  const artifactDir = path.dirname(inputs["build-artifact"]);
+
+  // Verify required inputs exist
+  for (const [typeName, filePath] of Object.entries(inputs)) {
+    if (!fileExists(filePath)) {
+      console.error(`Missing required input "${typeName}": ${filePath}`);
+      if (typeName === "build-artifact") console.error("Run the build division first: node departments/build/runner.js --run-id <id>");
+      process.exit(1);
+    }
   }
 
-  if (!fileExists(path.join(handoffDir, "runtime-spec.md"))) {
-    console.error("Missing runtime-spec.md in handoff directory.");
-    process.exit(1);
-  }
-
-  const runtimeSpec = readFile(path.join(handoffDir, "runtime-spec.md"));
-  const factoryManifest = fileExists(path.join(handoffDir, "factory-manifest.json"))
-    ? readJSON(path.join(handoffDir, "factory-manifest.json"))
+  const runtimeSpec = readFile(inputs["runtime-spec"]);
+  const factoryManifest = inputs["factory-manifest"] && fileExists(inputs["factory-manifest"])
+    ? readJSON(inputs["factory-manifest"])
     : { projectName: "unknown" };
 
   console.log(`\nSoftware Factory — Security Division`);
@@ -364,9 +369,7 @@ async function main() {
   const verdictText2 = fileExists(verdictReportPath)
     ? readFile(verdictReportPath).match(/^#\s*Security Verdict:\s*(\S.*)/im)?.[1] ?? "unknown"
     : "unknown";
-  const secManifest = fileExists(path.join(handoffDir, "factory-manifest.json"))
-    ? readJSON(path.join(handoffDir, "factory-manifest.json"))
-    : {};
+  const secManifest = inputs["factory-manifest"] && fileExists(inputs["factory-manifest"]) ? readJSON(inputs["factory-manifest"]) : {};
   const staticReportPath = path.join(securityDir, "static-analysis-report.md");
   const dynamicReportPath = path.join(securityDir, "dynamic-test-report.md");
 

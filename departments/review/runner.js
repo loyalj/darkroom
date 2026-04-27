@@ -14,27 +14,29 @@
  * On no-ship: writes structured failure reports for build division routing.
  *
  * Usage:
- *   node run-review.js --run-id <id>
+ *   node departments/review/runner.js --run-id <id>
  */
 
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const { createInteraction } = require("../io/interaction");
-const { cliAdapter } = require("../io/adapters/cli");
-const { fileAdapter } = require("../io/adapters/file");
-const { createPhaseDisplay, agentStream, A, formatElapsed, setRunDir } = require("../lib/display");
-const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
-const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, extractCompact } = require("../lib/runner-utils");
-const { claudeCall, claudeToolCallAsync } = require("../adapters/claude-cli");
-const { runReflector } = require("../lib/memory");
+const { createInteraction } = require("../../io/interaction");
+const { cliAdapter } = require("../../io/adapters/cli");
+const { fileAdapter } = require("../../io/adapters/file");
+const { createPhaseDisplay, agentStream, A, formatElapsed, setRunDir } = require("../../lib/display");
+const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../../lib/token-log");
+const { readFile, writeFile, readJSON, fileExists, buildSystemPrompt, logEvent, hr, extractCompact } = require("../../lib/runner-utils");
+const { claudeCall, claudeToolCallAsync } = require("../../adapters/claude-cli");
+const { runReflector } = require("../../lib/memory");
+const workers = require("../../lib/workers");
+const types = require("../../lib/types");
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const AGENTS_DIR = path.join(__dirname, "..", "agents");
-const RUNS_DIR = path.join(__dirname, "..", "runs");
+const AGENTS_DIR = path.join(__dirname, "..", "..", "agents");
+const RUNS_DIR = path.join(__dirname, "..", "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(AGENTS_DIR, "shared", "output-formats.md");
 
@@ -109,7 +111,7 @@ function runScenarioAnalyst(reviewDir, reviewSpec, runtimeSpec, runDir) {
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "review", "scenario-analyst.md")),
+    workers.resolveSlotPrompt(runDir, "review.scenario-analyst"),
     memoryContext
   );
 
@@ -166,7 +168,7 @@ async function runExplorers(reviewDir, coverageMap, reviewSpec, runtimeSpec, art
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "review", "explorer.md")),
+    workers.resolveSlotPrompt(runDir, "review.tester"),
     caveman ? readFile(path.join(AGENTS_DIR, "caveman", "scenario-result.md")) : null,
     memoryContext
   );
@@ -268,7 +270,7 @@ async function runEdgeCaseAgent(reviewDir, coverageMap, reviewSpec, runtimeSpec,
     const plannerPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "review", "edge-case-planner.md")),
+      workers.resolveSlotPrompt(runDir, "review.tester"),
       memoryContext
     );
 
@@ -303,7 +305,7 @@ async function runEdgeCaseAgent(reviewDir, coverageMap, reviewSpec, runtimeSpec,
   const runnerPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "review", "edge-case-runner.md")),
+    workers.resolveSlotPrompt(runDir, "review.tester"),
     caveman ? readFile(path.join(AGENTS_DIR, "caveman", "edge-case-result.md")) : null,
     memoryContext
   );
@@ -415,7 +417,7 @@ async function runVerdictAgent(reviewDir, coverageMap, reviewSpec, runDir, cavem
   const systemPrompt = buildSystemPrompt(
     readFile(SHARED_CONVENTIONS),
     readFile(SHARED_OUTPUT_FORMATS),
-    readFile(path.join(AGENTS_DIR, "review", "verdict.md")),
+    readFile(path.join(__dirname, "verdict.md")),
     memoryContext
   );
 
@@ -582,7 +584,7 @@ async function main() {
   const args = process.argv.slice(2);
   const runIdIndex = args.indexOf("--run-id");
   if (runIdIndex < 0 || !args[runIdIndex + 1]) {
-    console.error("Usage: node run-review.js --run-id <id>");
+    console.error("Usage: node departments/review/runner.js --run-id <id>");
     process.exit(1);
   }
 
@@ -590,23 +592,27 @@ async function main() {
   const caveman = args.includes("--caveman") || process.env.FACTORY_CAVEMAN === "1";
   const runDir = path.join(RUNS_DIR, id);
   setRunDir(runDir);
-  const handoffDir = path.join(runDir, "handoff");
-  const artifactDir = path.join(runDir, "artifact");
   const reviewDir = path.join(runDir, "review");
 
   fs.mkdirSync(reviewDir, { recursive: true });
 
-  // Verify inputs
-  for (const f of ["review-spec.md", "runtime-spec.md", "factory-manifest.json"]) {
-    if (!fileExists(path.join(handoffDir, f))) {
-      console.error(`Missing handoff artifact: ${f}`);
+  const ioCtxPath = path.join(runDir, "io-context.json");
+  const inputs = fileExists(ioCtxPath)
+    ? readJSON(ioCtxPath).inputs
+    : types.resolve(["review-spec", "runtime-spec", "factory-manifest", "build-artifact"], runDir);
+  const artifactDir = path.dirname(inputs["build-artifact"]);
+
+  // Verify required inputs exist
+  for (const [typeName, filePath] of Object.entries(inputs)) {
+    if (!fileExists(filePath)) {
+      console.error(`Missing required input "${typeName}": ${filePath}`);
       process.exit(1);
     }
   }
 
-  const reviewSpec = readFile(path.join(handoffDir, "review-spec.md"));
-  const runtimeSpec = readFile(path.join(handoffDir, "runtime-spec.md"));
-  const factoryManifest = readJSON(path.join(handoffDir, "factory-manifest.json"));
+  const reviewSpec = readFile(inputs["review-spec"]);
+  const runtimeSpec = readFile(inputs["runtime-spec"]);
+  const factoryManifest = readJSON(inputs["factory-manifest"]);
 
   const memCtxPath = path.join(runDir, "memory-context.md");
   memoryContext = fileExists(memCtxPath) ? readFile(memCtxPath) : null;
@@ -649,7 +655,7 @@ async function main() {
   const scenarioFailed = (coverageMap2.scenarios?.length ?? 0) - scenarioPassed;
   const verdictPath2 = path.join(reviewDir, "verdict-report.md");
   const verdictText = fileExists(verdictPath2) ? readFile(verdictPath2).match(/^#\s*Verdict:\s*(\S.*)/im)?.[1] ?? "unknown" : "unknown";
-  const reviewManifest = fileExists(path.join(handoffDir, "factory-manifest.json")) ? readJSON(path.join(handoffDir, "factory-manifest.json")) : {};
+  const reviewManifest = inputs["factory-manifest"] && fileExists(inputs["factory-manifest"]) ? readJSON(inputs["factory-manifest"]) : {};
 
   const reflCtx = [
     `## Run ID\n\n${id}`,

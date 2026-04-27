@@ -1,0 +1,42 @@
+{
+  "id": "build",
+  "name": "Build",
+  "description": "Implements the artifact from design specs: architecture, coding, integration, and packaging.",
+  "runner": "departments/build/runner.js",
+  "inputs":  ["design-spec", "runtime-spec", "factory-manifest"],
+  "outputs": ["build-artifact", "event:build-complete"],
+  "slots": [
+    {
+      "id": "architect",
+      "name": "Architect",
+      "description": "Plans the implementation task graph and system design.",
+      "type": "architect",
+      "multiple": false,
+      "default": "default-architect"
+    },
+    {
+      "id": "coder",
+      "name": "Coder",
+      "description": "Implements individual tasks from the architect's plan.",
+      "type": "coder",
+      "multiple": false,
+      "default": "default-coder"
+    },
+    {
+      "id": "copywriter",
+      "name": "Copywriter",
+      "description": "Writes user-facing copy, documentation, and content.",
+      "type": "copywriter",
+      "multiple": false,
+      "default": "default-copywriter"
+    },
+    {
+      "id": "packager",
+      "name": "Packager",
+      "description": "Assembles the final artifact and manifest.",
+      "type": "packager",
+      "multiple": false,
+      "default": "default-packager"
+    }
+  ]
+}

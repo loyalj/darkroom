@@ -1,6 +1,6 @@
 # Software Factory
 
-A multi-agent Claude pipeline that takes a software idea from concept to a shippable artifact. Four divisions run in sequence — Design, Build, Review, and Security — each staffed by Claude agents and coordinated by a pipeline orchestrator.
+A multi-agent Claude pipeline that takes a software idea from concept to a shippable artifact. Four divisions run in sequence — Design, Build, Review, and Security — each staffed by Claude agents and coordinated by a data-driven pipeline orchestrator.
 
 ---
 
@@ -9,7 +9,7 @@ A multi-agent Claude pipeline that takes a software idea from concept to a shipp
 - Node.js
 - Claude Code CLI installed and authenticated (`claude` must be available in your PATH)
 
-After cloning, install dependencies for the GUI server:
+After cloning, install dependencies:
 
 ```
 npm install
@@ -17,106 +17,124 @@ npm install
 
 ---
 
-## Running the Factory
+## Quick Start — GUI
 
-### Recommended: Pipeline Orchestrator
-
-The orchestrator runs all four divisions in sequence and handles the handoffs between them automatically.
+The web dashboard is the primary way to use the factory. It handles launching runs, monitoring progress in real time, browsing history, managing org brains, and designing workers.
 
 ```
-node run-factory.js
+node run-gui.js             # start the dashboard at http://localhost:4242
+node run-gui.js --port 8080 # custom port
 ```
 
-**First run only:** The factory will conduct a one-time brain interview before anything else. This builds `brain.md` — your decision-making profile. The orchestrator uses it to make autonomous calls on your behalf in auto mode. Takes 10–20 minutes. Never runs again once the file exists. Type `lock`, `done`, or `finalize` at any point to end the interview early and proceed with what's been captured. Delete `brain.md` to re-run the interview.
+From the dashboard you can:
 
-**Options:**
+- **Launch Run** — pick a profile, optional source run, mode, and tag; click Launch
+- **Run Viewer** — streams live progress, token spend, brain decisions, and agent transcripts for any in-progress run
+- **Run Browser** — browse and inspect all completed runs
+- **Factory Profiles** — view, edit, and author pipeline profiles; assign workers to slots
+- **Factory Staff** — manage org role brains and design custom worker agents
+- **Factory Memory** — read accumulated craft knowledge (wikis) and run history per department
+
+---
+
+## Org Setup
+
+Before running in auto mode, set up your org brain. The factory uses it to make autonomous decisions on your behalf.
+
+From the GUI, go to **Factory Staff** and click **New Role** to begin a guided interview for any role that's missing a brain. The CEO role governs all factory-wide decisions by default.
+
+Or from the CLI:
+
+```
+node departments/hr/run.js --role ceo          # interview the CEO role
+node departments/hr/run.js --create-role       # design a new role, then interview it
+node departments/hr/run.js --create-worker     # design a custom worker agent
+```
+
+The brain interview takes 10–20 minutes and captures your management style, quality bar, copy voice, security posture, and escalation preferences. Re-run it at any time to update — the existing brain is replaced.
+
+---
+
+## Running the Factory — CLI
+
+If you prefer the terminal, the orchestrator runs the full pipeline directly.
 
 ```
 node run-factory.js                           # new run, full pipeline (manual mode)
-node run-factory.js --mode auto               # fully autonomous — factory makes all decisions
+node run-factory.js --mode auto               # fully autonomous
 node run-factory.js --run-id <id>             # resume an existing run
-node run-factory.js --tag <label>             # attach a label to the run (visible in inspect and GUI)
+node run-factory.js --profile lean            # use a specific profile
+node run-factory.js --tag <label>             # attach a label to the run
 node run-factory.js --stop-after design       # stop after a specific division
 node run-factory.js --stop-after build
 node run-factory.js --stop-after review
-node run-factory.js --caveman                 # enable caveman mode (compressed agent context)
+node run-factory.js --caveman                 # compressed agent context (lower token spend)
 ```
 
-**Caveman mode** reduces token spend by compressing the context passed between agents. Useful when running many iterations or on a tight budget. Can also be enabled via environment variable: `FACTORY_CAVEMAN=1 node run-factory.js`.
+**Caveman mode** reduces token spend by compressing context passed between agents. Useful for tight budgets. Also available as `FACTORY_CAVEMAN=1 node run-factory.js`.
 
 **Manual vs. auto mode:**
 
 | Mode | What you do |
 |------|-------------|
 | `manual` (default) | Participate in each division's decision points — architect interview, copy approval, verdict review, security sign-off |
-| `auto` | The factory handles all decision points using your brain profile. Escalates to you when confidence is low or loop limits are reached. |
-
-**After a run:**
-
-```
-node inspect.js <run-id>              # detailed status, token usage, decisions made
-node inspect.js <run-id> --detail     # adds per-agent breakdown
-node inspect.js <id1> <id2>           # compare two runs (token and time delta)
-node inspect.js --trend               # all runs chronologically with ship rate and stats
-node inspect.js --trend 10            # last 10 runs only
-node inspect.js --trend --detail      # trend with per-phase breakdown
-node inspect.js                       # list all runs
-```
-
-**GUI dashboard:**
-
-```
-node run-gui.js             # start the web dashboard at http://localhost:4242
-node run-gui.js --port 8080 # custom port
-```
-
-The dashboard has two tabs: **Run Viewer** (auto-connects to any in-progress run and streams live updates — pipeline progress, token spend, brain decisions, and agent transcripts) and **Run Browser** (browse and inspect all completed runs).
+| `auto` | The factory handles all decision points using your org brain. Escalates when confidence is low or loop limits are reached. |
 
 ---
 
-### Standalone Runners
+## Pipeline Profiles
 
-Each division can also be run independently. Pass the same `--run-id` across all four to chain them manually.
+A profile defines which divisions run and how they connect. Select a profile from the Launch view or pass `--profile` on the CLI.
 
-```
-node run-design.js                          # starts a new run, prints the run ID
-node run-design.js   --run-id <id>          # resume (skips completed phases)
-node run-build.js    --run-id <id>
-node run-review.js   --run-id <id>
-node run-security.js --run-id <id>
-```
+| Profile | Pipeline | Use when |
+|---------|----------|----------|
+| `full` (default) | Design → Build → Review → Security | Production quality — full pipeline |
+| `lean` | Design → Build → Review | Skips security — faster iteration |
+| `rapid` | Design → Build | Design and implement only |
+| `audit` | Review → Security | Audit an existing artifact from a previous run |
 
-Every phase is checkpointed. If a run is interrupted, re-run the same command and it picks up where it left off.
+Profiles live in `profiles/` as JSON and are fully editable from the Factory Profiles view.
 
 ---
 
-## Auto Mode and the Brain
+## Auto Mode and the Org Brain
 
-When running with `--mode auto`, the factory makes all decision-point calls autonomously using two context files:
+When running with `--mode auto`, the factory makes decision-point calls autonomously using two context files:
 
-**`brain.md`** (project root) — your global decision-making profile. Created once via interview on first run. Captures your management style, quality bar, copy voice, security posture, and escalation preferences. Edit it directly or re-run the interview by deleting the file.
+**`org/ceo/brain.md`** — your global decision-making profile. Set up via HR before running auto mode. Captures your management style, quality bar, copy voice, security posture, and escalation preferences.
 
 **`runs/{id}/run-brain.md`** — per-run calibration. Created after Design completes, before Build starts. Grounds the orchestrator in the specific project's intent, priority, constraints, and token budget.
 
 **Decision points handled in auto mode:**
 
-| Division | Decision point | Signal |
-|----------|---------------|--------|
-| Build | Copy review approval | Approve or request revision based on your copy voice |
-| Security | Dynamic test plan | Approve all, skip specific tests, or cancel |
-| Security | High finding (conditional pass) | Accept finding or send for remediation |
-| Security | Final sign-off | Approve when all findings are resolved |
-| Review | No-ship verdict | Accept (route to build) or override with reason |
-| Review | Ship verdict | Approve and ship |
+| Division | Decision point |
+|----------|---------------|
+| Build | Copy review approval |
+| Security | Dynamic test plan |
+| Security | High finding (conditional pass) |
+| Security | Final sign-off |
+| Review | No-ship verdict |
+| Review | Ship verdict |
 
 **When auto mode escalates to you:**
 
-- Confidence is low on a decision (brain context is insufficient)
+- Confidence is low on a decision
 - A loop limit is reached without resolution
-- An unknown signal type is received
-- Budget limit exceeded (asks whether to continue)
+- Budget limit exceeded
 
-Escalation pauses the factory at the CLI with a report of what happened and the options available.
+Escalation pauses the factory with a report of what happened and the available options.
+
+---
+
+## Workers
+
+Each division has named **slots** — the roles agents fill during a run (e.g. `build.architect`, `design.spec-writer`). By default, every slot is filled by the built-in default worker. Custom workers let you swap in a different agent persona for any slot.
+
+**Designing a worker:** Go to **Factory Staff → + New Worker** in the GUI. The Worker Designer interviews you about the persona — expertise, style, constraints — and writes a system prompt. The worker is saved and immediately available for assignment.
+
+**Assigning workers to a profile:** Go to **Factory Profiles**, select a profile, and click the **Workers** tab. Each slot shows its current worker with a dropdown to reassign. Save the profile to persist the assignment.
+
+**How it works at runtime:** The factory writes `worker-assignments.json` into the run directory before spawning each division. Each runner resolves slot prompts from that file, falling back to schema defaults for any unassigned slots.
 
 ---
 
@@ -126,10 +144,6 @@ Escalation pauses the factory at the CLI with a report of what happened and the 
 
 Conducts a structured interview to produce the specs that drive everything downstream.
 
-```
-node run-design.js
-```
-
 | # | Phase | What happens |
 |---|-------|-------------|
 | 1 | Functional Interview | Agent asks what your software does — mechanics, rules, data, edge cases |
@@ -137,8 +151,6 @@ node run-design.js
 | 3 | Consistency Check | Agent privately reviews both transcripts for gaps and conflicts |
 | 4 | Clarification Round | If issues found, agent asks targeted follow-up questions |
 | 5 | Spec Generation | Agent writes four locked artifacts to `runs/{id}/handoff/` |
-
-**Your role:** Answer the interview questions. Phases 1 and 2 end when the agent says it has everything it needs. Phase 4 only appears if Phase 3 found issues.
 
 **Output artifacts written to `runs/{id}/handoff/`:**
 - `build-spec.md` — functional requirements and acceptance criteria
@@ -152,23 +164,19 @@ node run-design.js
 
 Receives the Build Spec and produces a verified, packaged artifact.
 
-```
-node run-build.js --run-id <id>
-```
-
 | # | Phase | What happens |
 |---|-------|-------------|
 | 1 | Architect Interview | Agent presents its technical plan and asks any open questions |
-| 2 | Implementation | Agents write code to `runs/{id}/build/src/` sequentially |
+| 2 | Implementation | Agents write code to `runs/{id}/build/src/` |
 | 3 | Integration | Agent assembles modules and resolves interface issues |
 | 4 | Copy Review | Agent audits all user-facing strings; decision point |
 | 5 | Verification | Agent runs the build against acceptance criteria; failures route to Fix |
 | 6 | Packaging | Agent copies runtime files to `runs/{id}/artifact/` |
 
 **Decision points:**
-- **Phase 1 — Architect Interview:** Discuss the plan. Type `lock`, `done`, or `finalize` to end the interview and begin implementation. The agent will also signal when it's ready — you can confirm or keep discussing.
+- **Phase 1 — Architect Interview:** Discuss the plan. Type `lock` to end the interview and begin implementation.
 - **Phase 4 — Copy Review:** Type `yes` to approve, or type feedback to request revisions.
-- **Phase 5 — Verification failures:** Describe what needs fixing if asked. The Fix agent applies changes and re-verifies.
+- **Phase 5 — Verification failures:** Describe what needs fixing. The Fix agent applies changes and re-verifies.
 
 **Fix mode:** If Review or Security sends failure reports back, re-running build automatically enters Fix Mode — reads the failure reports, applies fixes, and re-verifies.
 
@@ -176,11 +184,7 @@ node run-build.js --run-id <id>
 
 ### Review Division
 
-Independently verifies the artifact against the Review Spec. No access to source code — it evaluates the experience.
-
-```
-node run-review.js --run-id <id>
-```
+Independently verifies the artifact against the Review Spec. Evaluates the experience, not the source code.
 
 | # | Phase | What happens |
 |---|-------|-------------|
@@ -201,10 +205,6 @@ node run-review.js --run-id <id>
 
 Performs static and dynamic security testing on the artifact.
 
-```
-node run-security.js --run-id <id>
-```
-
 | # | Phase | What happens |
 |---|-------|-------------|
 | 1 | Static Analysis | Agent reviews source code for vulnerabilities |
@@ -223,6 +223,8 @@ node run-security.js --run-id <id>
 
 ## Inspecting Runs
 
+The Run Browser in the GUI covers most inspection needs. For terminal use:
+
 ```
 node inspect.js <run-id>              # detailed view
 node inspect.js <run-id> --detail     # adds per-agent token and time breakdown
@@ -232,22 +234,15 @@ node inspect.js --trend 10 --detail   # last 10 runs with per-phase stats
 node inspect.js                       # list all runs
 ```
 
-The detailed view shows:
-- Division status (complete / in-progress / not-started / blocked)
-- Token usage by phase (input + output; cache shown separately)
-- Time per phase
-- Orchestrator decisions (in auto mode) — what was decided, confidence, reasoning summary
-- Pending action items — failure reports or remediations waiting for build
-
-The trend view shows ship rate, average tokens, and average time across runs — useful for evaluating prompt changes or model swaps over time.
+The detailed view shows division status, token usage by phase, time per phase, orchestrator decisions, and any pending failure reports or remediations.
 
 ---
 
 ## Token Budget
 
-Set a spend limit during the brain or run brain interview. The accountant checks spend after each division and pauses the factory if the limit is exceeded — you can continue or abort.
+Set a spend limit during the brain or run brain interview. The factory checks spend after each division and pauses if the limit is exceeded — you can continue or abort.
 
-Historical token spend per run is recorded in `accounts/ledger.jsonl`. Over time this shows what different project types cost.
+Historical token spend per run is recorded in `accounts/ledger.jsonl`.
 
 ---
 
@@ -260,6 +255,7 @@ runs/{run-id}/
     review-spec.md
     runtime-spec.md
     factory-manifest.json
+  worker-assignments.json     Resolved worker slot assignments for this run
   build/
     src/                      Generated source code
     architecture-plan.md
@@ -275,63 +271,67 @@ runs/{run-id}/
     verdict-report.md
   security/
     static-analysis-report.md
-    proposed-test-plan.json   Written before approval (orchestrator reads this)
+    proposed-test-plan.json
     approved-test-plan.json
     dynamic-test-report.md
     security-verdict-report.md
   failure-reports/            Written by Review on NO-SHIP → consumed by Build fix mode
   security-remediations/      Written by Security on BLOCK → consumed by Build fix mode
-  run-brain.md                Per-run calibration (created post-Design in orchestrator)
+  run-brain.md                Per-run calibration (created post-Design)
   run-config.json             Structured limits extracted from run brain
-  run-meta.json               Optional tag and start timestamp (written if --tag is passed)
+  run-meta.json               Tag and start timestamp (written if --tag is passed)
   decision-log.jsonl          Every auto decision made by the orchestrator
   log.jsonl                   Append-only event log
-  token-usage.jsonl           Raw token usage (one entry per agent call)
+  token-usage.jsonl           Raw token usage per agent call
   time-usage.jsonl            Elapsed time per agent call
 
-brain.md                      Global brain — your decision-making profile (project root)
-brain.example.md              Example brain showing the expected structure and sections
-brain-config.json             Structured limits extracted from global brain
-brain-transcript.md           Brain interview transcript
-brain-token-usage.jsonl       Token usage from brain and run-brain interviews
-accounts/ledger.jsonl         Cross-run token spend history
+org/
+  chart.json                  Org chart — role definitions and decision point ownership
+  ceo/                        CEO role (global brain — governs all factory decisions)
+    brain.md
+    brain-transcript.md
+  {role}/                     One directory per org role
+
+workers/
+  {id}/                       One directory per worker
+    worker.json               Worker metadata (id, name, slotType, department)
+    prompt.md                 Custom system prompt (absent for built-in default workers)
+
+memory/
+  design/  build/  review/  security/
+    wiki.md                   Accumulated craft knowledge (injected into agent prompts)
+    runs.jsonl                Structured run records
+
+profiles/
+  full.json    lean.json    rapid.json    audit.json
 ```
 
 ---
 
-## Agents Directory
+## Agent Prompts
 
-Agent behavior is defined in Markdown files under `agents/`. Edit them directly to change how any agent thinks without touching the runner scripts.
+Each division's agent prompts live co-located with the runner, in `departments/{dept}/`. Edit them directly to change how any agent thinks. Shared infrastructure prompts are in `agents/shared/` and `agents/leadership/`.
 
 ```
-agents/
-  design/
-    interviewer.md
-    experience-interviewer.md
-    consistency-checker.md
-    spec-writer.md
+departments/
   build/
-    architect.md
-    implementation.md
-    integration.md
-    copywriter.md
-    verification.md
-    fix.md
-    packager.md
+    architect.md      implementation.md   integration.md
+    copywriter.md     verification.md     fix.md   packager.md
+  design/
+    interviewer.md    experience-interviewer.md
+    consistency-checker.md    spec-writer.md
   review/
-    scenario-analyst.md
-    explorer.md
-    edge-case.md
-    verdict.md
+    scenario-analyst.md   explorer.md   edge-case-runner.md   verdict.md
   security/
-    static-analyst.md
-    dynamic-planner.md
-    dynamic-tester.md
-    verdict.md
-  leadership/
-    brain-interviewer.md      Conducts the one-time global brain interview
-    run-brain-interviewer.md  Conducts the per-run calibration interview
+    static-analyst.md   dynamic-tester.md   verdict.md
+  hr/
+    brain-interviewer.md   role-designer.md   worker-designer.md
+
+agents/
   shared/
-    conventions.md            Prefixed to every agent's system prompt
-    output-formats.md         Structured output schemas
+    conventions.md          Prefixed to every agent's system prompt
+    output-formats.md       Structured output schemas
+  leadership/
+    run-brain-interviewer.md
+    architect-reviewer.md
 ```

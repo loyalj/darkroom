@@ -1,0 +1,26 @@
+{
+  "id": "security",
+  "name": "Security",
+  "description": "Performs static and dynamic security analysis; issues a security verdict.",
+  "runner": "departments/security/runner.js",
+  "inputs":  ["runtime-spec", "factory-manifest", "build-artifact"],
+  "outputs": ["event:security-approved", "event:security-rejected"],
+  "slots": [
+    {
+      "id": "static-analyst",
+      "name": "Static Analyst",
+      "description": "Performs static code security analysis.",
+      "type": "static-analyst",
+      "multiple": false,
+      "default": "default-static-analyst"
+    },
+    {
+      "id": "dynamic-tester",
+      "name": "Dynamic Tester",
+      "description": "Performs dynamic/runtime security testing.",
+      "type": "dynamic-tester",
+      "multiple": false,
+      "default": "default-dynamic-tester"
+    }
+  ]
+}

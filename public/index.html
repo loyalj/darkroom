@@ -6,6 +6,7 @@
   <title>Dark Software Factory</title>
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" />
+  <link rel="stylesheet" href="https://unpkg.com/drawflow/dist/drawflow.min.css" />
 </head>
 <body>
   <div id="app">
@@ -21,7 +22,7 @@
         <div class="nav-item" data-view="monitor">Run Viewer</div>
         <div class="nav-item" data-view="browser">Run Browser</div>
         <div class="nav-item" data-view="profiles">Factory Profiles</div>
-        <div class="nav-item" data-view="roles">Factory Roles</div>
+        <div class="nav-item" data-view="staff">Factory Staff</div>
         <div class="nav-item" data-view="orgcharts">Org. Charts</div>
         <div class="nav-item" data-view="memory">Factory Memory</div>
       </div>
@@ -195,44 +196,80 @@
           <h2>Factory Profiles</h2>
         </div>
         <div id="profiles-body">
-          <div id="profiles-sidebar"></div>
+          <div id="profiles-sidebar">
+            <div id="profiles-list"></div>
+            <div id="profiles-palette-section">
+              <div class="profiles-palette-header">Departments</div>
+              <div id="profiles-palette"></div>
+            </div>
+          </div>
           <div id="profiles-main" class="mode-preview">
             <div id="profiles-mode-bar">
               <div id="profiles-mode-toggle">
-                <button class="profiles-mode-btn active" data-mode="preview">Preview</button>
+                <button class="profiles-mode-btn active" data-mode="preview">Canvas</button>
                 <button class="profiles-mode-btn" data-mode="code">Code</button>
+                <button class="profiles-mode-btn" data-mode="workers">Workers</button>
               </div>
               <span id="profiles-saved-badge" class="profiles-saved-badge"></span>
               <button id="profiles-save-btn" class="profiles-save-btn" disabled>Save</button>
             </div>
             <div id="profiles-graph-pane">
-              <div class="empty-state">
+              <div id="profiles-canvas-host"></div>
+              <div id="profiles-canvas-empty" class="empty-state">
                 <span>Select a profile</span>
-                <span class="hint">The node pipeline will appear here.</span>
+                <span class="hint">The pipeline canvas will appear here.</span>
               </div>
             </div>
             <div id="profiles-editor-pane">
               <div id="profiles-editor-error"></div>
               <textarea id="profiles-editor" spellcheck="false" placeholder="Select a profile to edit…"></textarea>
             </div>
+            <div id="profiles-workers-pane"></div>
           </div>
+
+          <!-- Node inspector panel -->
+          <div id="profiles-inspector">
+            <div id="inspector-resize"></div>
+            <div id="inspector-header">
+              <span id="inspector-dept-name"></span>
+              <button id="inspector-close" title="Close">✕</button>
+            </div>
+            <div id="inspector-body">
+              <p id="inspector-description"></p>
+
+              <div class="inspector-section">
+                <div class="inspector-section-label">Options</div>
+                <label class="inspector-option">
+                  <input type="checkbox" id="inspector-budget-check">
+                  <span>Budget check after run</span>
+                </label>
+              </div>
+
+              <div class="inspector-section" id="inspector-slots-section">
+                <div class="inspector-section-label">Slots</div>
+                <div id="inspector-slots"></div>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
 
-      <!-- ── Factory Roles ── -->
-      <div id="view-roles" class="view">
+      <!-- ── Factory Staff ── -->
+      <div id="view-staff" class="view">
         <div class="panel-header">
-          <h2>Factory Roles</h2>
-          <button id="org-refresh-btn" class="memory-refresh-btn">↺ Refresh</button>
-          <button id="org-interview-btn" class="org-interview-btn" disabled>Run Interview</button>
+          <h2>Factory Staff</h2>
+          <button id="staff-refresh-btn" class="memory-refresh-btn">↺ Refresh</button>
+          <button id="org-interview-btn" class="org-interview-btn" disabled>New Role</button>
+          <button id="staff-new-worker-btn" class="org-interview-btn">+ New Worker</button>
         </div>
         <div id="org-body">
           <div id="org-sidebar"></div>
           <div id="org-main" class="org-mode-brain">
             <div id="org-brain-pane">
               <div class="empty-state">
-                <span>Select a role</span>
-                <span class="hint">The role's brain will appear here.</span>
+                <span>Select a role or worker</span>
+                <span class="hint">Brain or prompt will appear here.</span>
               </div>
             </div>
             <div id="org-hr-pane">
@@ -293,6 +330,7 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://unpkg.com/drawflow/dist/drawflow.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

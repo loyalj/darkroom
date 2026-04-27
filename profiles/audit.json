@@ -6,7 +6,7 @@
   "nodes": [
     {
       "id": "review",
-      "runner": "departments/run-review.js",
+      "runner": "departments/review/runner.js",
       "skipIf": "review/verdict-report.md",
       "memory": {
         "readWiki": ["design", "build", "review", "security"],
@@ -16,7 +16,7 @@
     },
     {
       "id": "security",
-      "runner": "departments/run-security.js",
+      "runner": "departments/security/runner.js",
       "skipIf": "security/security-verdict-report.md",
       "memory": {
         "readWiki": ["design", "build", "review", "security"],
@@ -26,7 +26,7 @@
     }
   ],
   "edges": [
-    { "from": "review", "to": "security", "type": "forward", "on": "ship-approved" }
+    { "from": "review", "to": "security", "type": "forward", "on": "ship-approved", "carries": ["build-artifact"] }
   ],
   "budgetCheckpoints": ["after:review", "after:security"]
 }

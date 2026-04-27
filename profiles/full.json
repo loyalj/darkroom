@@ -5,7 +5,7 @@
   "nodes": [
     {
       "id": "design",
-      "runner": "departments/run-design.js",
+      "runner": "departments/design/runner.js",
       "skipIf": "handoff/build-spec.md",
       "memory": {
         "readWiki": ["design", "build", "review", "security"],
@@ -15,7 +15,7 @@
     },
     {
       "id": "build",
-      "runner": "departments/run-build.js",
+      "runner": "departments/build/runner.js",
       "skipIf": "artifact/MANIFEST.txt",
       "feedbackLoop": true,
       "memory": {
@@ -26,7 +26,7 @@
     },
     {
       "id": "review",
-      "runner": "departments/run-review.js",
+      "runner": "departments/review/runner.js",
       "skipIfEvent": "ship-approved",
       "memory": {
         "readWiki": ["design", "build", "review", "security"],
@@ -36,7 +36,7 @@
     },
     {
       "id": "security",
-      "runner": "departments/run-security.js",
+      "runner": "departments/security/runner.js",
       "skipIfEvent": "security-approved",
       "memory": {
         "readWiki": ["design", "build", "review", "security"],
@@ -46,11 +46,11 @@
     }
   ],
   "edges": [
-    { "from": "design",   "to": "build",    "type": "forward" },
-    { "from": "build",    "to": "review",   "type": "forward" },
-    { "from": "review",   "to": "security", "type": "forward",  "on": "ship-approved" },
-    { "from": "review",   "to": "build",    "type": "backward", "on": "ship-rejected-no-ship", "context": "failure-reports/" },
-    { "from": "security", "to": "build",    "type": "backward", "on": "security-rejected",     "context": "security-remediations/" }
+    { "from": "design",   "to": "build",    "type": "forward",  "carries": ["design-spec", "runtime-spec", "factory-manifest"] },
+    { "from": "build",    "to": "review",   "type": "forward",  "carries": ["build-artifact"] },
+    { "from": "review",   "to": "security", "type": "forward",  "on": "ship-approved",         "carries": ["build-artifact"] },
+    { "from": "review",   "to": "build",    "type": "backward", "on": "ship-rejected-no-ship", "carries": ["event:ship-rejected"],     "context": "failure-reports/" },
+    { "from": "security", "to": "build",    "type": "backward", "on": "security-rejected",     "carries": ["event:security-rejected"], "context": "security-remediations/" }
   ],
   "budgetCheckpoints": ["after:build", "after:review", "after:security"]
 }

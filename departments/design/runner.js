@@ -13,28 +13,29 @@
  * Transcripts and output artifacts are written to runs/{run-id}/
  *
  * Usage:
- *   node run-design.js
- *   node run-design.js --run-id <existing-id>   # resume a run
+ *   node departments/design/runner.js
+ *   node departments/design/runner.js --run-id <existing-id>   # resume a run
  */
 
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { createInteraction } = require("../io/interaction");
-const { cliAdapter } = require("../io/adapters/cli");
-const { fileAdapter } = require("../io/adapters/file");
-const { createPhaseDisplay, createTicker, setRunDir } = require("../lib/display");
-const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../lib/token-log");
-const { readFile, writeFile, buildSystemPrompt, logEvent, fileExists } = require("../lib/runner-utils");
-const { claudeCall, claudeTurn } = require("../adapters/claude-cli");
-const { runReflector } = require("../lib/memory");
+const { createInteraction } = require("../../io/interaction");
+const { cliAdapter } = require("../../io/adapters/cli");
+const { fileAdapter } = require("../../io/adapters/file");
+const { createPhaseDisplay, createTicker, setRunDir } = require("../../lib/display");
+const { logTokens, writeTokenTable, logTime, writeTimeTable } = require("../../lib/token-log");
+const { readFile, writeFile, buildSystemPrompt, logEvent, fileExists } = require("../../lib/runner-utils");
+const { claudeCall, claudeTurn } = require("../../adapters/claude-cli");
+const { runReflector } = require("../../lib/memory");
+const workers = require("../../lib/workers");
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const AGENTS_DIR = path.join(__dirname, "..", "agents");
-const RUNS_DIR = path.join(__dirname, "..", "runs");
+const AGENTS_DIR = path.join(__dirname, "..", "..", "agents");
+const RUNS_DIR = path.join(__dirname, "..", "..", "runs");
 const SHARED_CONVENTIONS = path.join(AGENTS_DIR, "shared", "conventions.md");
 const SHARED_OUTPUT_FORMATS = path.join(
   AGENTS_DIR,
@@ -63,8 +64,8 @@ function runId() {
 // Interactive interview phase
 // ---------------------------------------------------------------------------
 
-async function runInterviewPhase(io, display, agentPromptPath, systemContext, transcriptPath, completionSignal, onUsage) {
-  const agentPrompt = readFile(agentPromptPath);
+async function runInterviewPhase(io, display, agentPromptContent, systemContext, transcriptPath, completionSignal, onUsage) {
+  const agentPrompt = agentPromptContent;
   const systemPrompt = buildSystemPrompt(readFile(SHARED_CONVENTIONS), readFile(SHARED_OUTPUT_FORMATS), agentPrompt, systemContext || "", memoryContext);
 
   const conversationHistory = [];
@@ -159,7 +160,7 @@ async function main() {
     await runInterviewPhase(
       io,
       display,
-      path.join(AGENTS_DIR, "design", "interviewer.md"),
+      workers.resolveSlotPrompt(runDir, "design.interviewer"),
       "",
       functionalTranscriptPath,
       "I have everything I need on the functional side.",
@@ -181,7 +182,7 @@ async function main() {
     await runInterviewPhase(
       io,
       display,
-      path.join(AGENTS_DIR, "design", "experience-interviewer.md"),
+      workers.resolveSlotPrompt(runDir, "design.experience-interviewer"),
       functionalContext,
       experienceTranscriptPath,
       "I have everything I need on the experience side.",
@@ -204,7 +205,7 @@ async function main() {
     const checkerPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "design", "consistency-checker.md")),
+      readFile(path.join(__dirname, "consistency-checker.md")),
       memoryContext
     );
 
@@ -257,7 +258,7 @@ async function main() {
     const writerPrompt = buildSystemPrompt(
       readFile(SHARED_CONVENTIONS),
       readFile(SHARED_OUTPUT_FORMATS),
-      readFile(path.join(AGENTS_DIR, "design", "spec-writer.md")),
+      workers.resolveSlotPrompt(runDir, "design.spec-writer"),
       memoryContext
     );
 

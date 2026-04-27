@@ -3,7 +3,10 @@
     "allow": [
       "Bash(node \"d:/Coding/dark-room/inspect.js\" 756f62e5)",
       "Bash(node run-gui.js)",
-      "Bash(start http://localhost:4242)"
+      "Bash(start http://localhost:4242)",
+      "Bash(node -e \"require\\('./run-gui.js'\\)\" --dry-run)",
+      "Bash(node -c public/app.js)",
+      "Bash(node -e ' *)"
     ]
   }
 }

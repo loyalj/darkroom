@@ -1,0 +1,10 @@
+{
+  "id": "default-architect",
+  "name": "Default Architect",
+  "description": "Plans the implementation task graph and system design from the build spec.",
+  "slotType": "architect",
+  "department": "build",
+  "builtin": true,
+  "sourceFile": "departments/build/architect.md",
+  "created": "2025-01-01T00:00:00.000Z"
+}

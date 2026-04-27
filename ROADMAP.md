@@ -21,24 +21,39 @@ that share infrastructure but operate independently. The work below is in two ca
 ```
 dark-room/
   run-factory.js              ← production pipeline entry point
-  run-hr.js                   ← HR entry point (role design + brain interviews)
+  run-hr.js                   ← shim → departments/hr/run.js
   run-gui.js                  ← GUI server entry point
 
   profiles/                   ← pipeline graph templates
     full.json                 (Design → Build → Review → Security)
     lean.json                 (Design → Build → Review)
+    rapid.json                (Design → Build)
+    audit.json                (Review → Security, for existing artifacts)
 
-  departments/                ← division runners (spawned by factory, not run directly)
-    run-design.js
-    run-build.js
-    run-review.js
-    run-security.js
-
-  agents/                     ← agent prompts
-    build/ design/ review/ security/ leadership/ shared/ caveman/
+  departments/                ← division modules (runner + schema + agent prompts co-located)
+    build/
+      runner.js  schema.json
+      architect.md  implementation.md  integration.md  copywriter.md
+      verification.md  fix.md  packager.md  wiki-reflector.md
+    design/
+      runner.js  schema.json
+      interviewer.md  experience-interviewer.md
+      consistency-checker.md  spec-writer.md  wiki-reflector.md
+    review/
+      runner.js  schema.json
+      scenario-analyst.md  explorer.md  edge-case-runner.md
+      verdict.md  wiki-reflector.md
+    security/
+      runner.js  schema.json
+      static-analyst.md  dynamic-tester.md  verdict.md  wiki-reflector.md
     hr/
-      brain-interviewer.md    (generic role brain interviewer)
-      role-designer.md        (conversational role spec designer)
+      run.js  schema.json
+      brain-interviewer.md  role-designer.md  worker-designer.md
+
+  workers/                    ← worker agent registry
+    <workerId>/
+      worker.json             (id, name, slotType, department, sourceFile for builtins)
+      prompt.md               (custom system prompt — absent for built-in defaults)
 
   lib/                        ← shared internal library
     runner-utils.js
@@ -47,6 +62,7 @@ dark-room/
     graph.js                  (profile-driven graph executor)
     org.js                    (org chart data layer)
     memory.js                 (memory wiki read/write/inject)
+    workers.js                (worker registry data layer)
 
   io/                         ← user I/O adapters
     adapters/cli.js
@@ -63,10 +79,16 @@ dark-room/
     <roleId>/                 (one directory per defined role, created by HR)
       brain.md
       brain-transcript.md
-      brain-token-usage.jsonl
 
   memory/                     ← department craft wikis (persistent, accumulated per run)
     design/  build/  review/  security/
+
+  agents/                     ← shared infrastructure prompts (not department-specific)
+    shared/
+      conventions.md          output-formats.md
+    leadership/
+      run-brain-interviewer.md  architect-reviewer.md
+    caveman/
 
   public/                     ← frontend
     app.js  index.html  style.css
@@ -74,7 +96,7 @@ dark-room/
   runs/                       ← runtime data (gitignored)
   accounts/                   ← token ledger (gitignored)
 
-  package.json  README.md  ORCHESTRATOR.md  ROADMAP.md
+  package.json  README.md  ROADMAP.md
 ```
 
 ---
@@ -439,12 +461,79 @@ values (`tokenLimitPerRun`, `maxLoopsBeforeEscalate`) read via `org.readConfigVa
 
 ---
 
-### Phase 8 — Typed Edges + Department I/O Manifests
+### Phase 8 — Workers System ✓ COMPLETE
+**Type:** New feature. Swappable agent personas per pipeline slot.
+**Depends on:** Phase 7 (org chart established)
+**Completed:** 2026-04-27
+
+The factory previously had hardcoded agent prompts baked into each division runner. Phase 8
+introduces a **workers** abstraction: each department declares named **slots**, and a worker
+is a named agent persona that fills a slot. Profiles declare which worker fills each slot;
+the system falls back to defaults.
+
+#### What was built
+
+**Department subdirectory restructure** — Each department is now a self-contained module:
+`departments/{dept}/runner.js` + `schema.json` (slot definitions) + agent `.md` files
+co-located. Old flat `departments/run-*.js` files removed.
+
+**`departments/{dept}/schema.json`** — declares the slot roster per department. Each slot
+has an `id`, `name`, `description`, `type`, and `default` (the built-in worker ID to fall back to).
+
+**`workers/` directory** — one subdirectory per worker: `worker.json` (metadata) +
+`prompt.md` (system prompt). Built-in default workers use a `sourceFile` field to point at
+the department's co-located `.md` file rather than duplicating it.
+
+**`lib/workers.js`** — data layer: `loadWorkers`, `resolveSlotPrompt` (run assignment →
+schema default fallback), `addWorker`, `listSlotTypes`, `buildCreateWorkerContext`.
+
+**All four division runners** updated to use `workers.resolveSlotPrompt(runDir, "dept.slot")`
+for every agent call. No hardcoded paths to `.md` files remain in runners.
+
+**HR `--create-worker` mode** — `departments/hr/run.js` gains a third mode alongside
+`--role` and `--create-role`. The Worker Designer agent interviews the operator about the
+persona (expertise, style, constraints) and produces a locked worker spec; `addWorker()`
+writes it to `workers/{id}/`.
+
+**`departments/hr/worker-designer.md`** — conversational worker design agent. Walks the
+operator through slot selection, character design, and system prompt draft; outputs a locked
+spec on confirmation.
+
+**`run-factory.js`** — writes `worker-assignments.json` into the run directory from
+`profile.workerAssignments ?? {}` before spawning each division. Runners read from this file
+first, then fall back to schema defaults.
+
+**Profile `workerAssignments` field** — optional map of `"dept.slotId"` → `"worker-id"`.
+Omitted keys use the slot's schema default. Empty or absent object leaves all slots at default.
+
+```json
+{
+  "id": "full",
+  "workerAssignments": {
+    "build.architect": "my-strict-architect",
+    "design.spec-writer": "my-terse-spec-writer"
+  },
+  "nodes": [...]
+}
+```
+
+**GUI — Factory Staff** (renamed from Factory Roles) — sidebar now has two sections: Brain
+Roles and Workers. Workers show grouped by `dept.slot`, with a detail pane that renders the
+system prompt. "New Worker" button launches an HR worker-design session.
+
+**GUI — Factory Profiles / Workers tab** — third tab alongside Preview and Code. Shows the
+full slot roster for the active profile, grouped by department node. Each slot has a dropdown
+to assign any compatible worker. Changing a selection patches `workerAssignments` in the
+profile JSON and enables Save.
+
+---
+
+### Phase 9 — Typed Edges + Department I/O Manifests ✓ complete 2026-04-27
 **Type:** Schema + refactor. Prerequisite for the visual graph editor.
 **Depends on:** Phase 5 (graph executor stable)
 
 Right now departments are coupled through hardcoded file paths scattered across every runner.
-Phase 8 codifies the implicit contracts into a type system so departments are fully decoupled
+Phase 9 codifies the implicit contracts into a type system so departments are fully decoupled
 from each other's paths, and the graph editor can enforce compatibility visually.
 
 #### Type registry (`lib/types.js`)
@@ -456,7 +545,6 @@ module.exports = {
   "design-spec":        "handoff/build-spec.md",
   "review-spec":        "handoff/review-spec.md",
   "build-artifact":     "artifact/MANIFEST.txt",
-  "warehouse-snapshot": "handoff/warehouse-snapshot.json",
   // events are not files — they route via log signals
   "event:ship-approved":      null,
   "event:security-approved":  null,
@@ -466,14 +554,14 @@ module.exports = {
 
 #### Department manifests
 
-Each department module exports an I/O declaration alongside its runner:
+Each department's `schema.json` gains an I/O declaration:
 
-```js
-// departments/run-build.js
-module.exports.manifest = {
-  inputs:  ["design-spec"],
-  outputs: ["build-artifact", "event:build-complete"],
-};
+```json
+{
+  "id": "build",
+  "inputs":  ["design-spec"],
+  "outputs": ["build-artifact", "event:build-complete"]
+}
 ```
 
 #### Profile edge schema addition
@@ -492,14 +580,14 @@ One source of truth for where every type lives.
 
 #### Why now
 
-Typed edges are the prerequisite for the visual graph editor's pin enforcement (Phase 9).
+Typed edges are the prerequisite for the visual graph editor's pin enforcement (Phase 10).
 Without manifests, the editor has no data to determine which connections are valid.
 
 ---
 
-### Phase 9 — Visual Graph Editor (Drawflow)
+### Phase 10 — Visual Graph Editor (Drawflow) ✓ complete 2026-04-27
 **Type:** New feature. GUI-first profile authoring.
-**Depends on:** Phase 8 (typed edges + manifests)
+**Depends on:** Phase 9 (typed edges + manifests)
 
 Replace the current read-only graph preview with a fully interactive node canvas using
 [Drawflow](https://github.com/jerosoler/Drawflow) — a zero-dependency, CDN-includable node
@@ -598,10 +686,11 @@ Phase 5   Second profile validation          ✓ complete  2026-04-25
 Phase 5b  Upgrade pipeline                   deferred    unblocked — ready when prioritized
 Phase 6   Memory wiki infrastructure         ✓ complete  2026-04-25
 Phase 7   Org chart / HR / specialist brains ✓ complete  2026-04-26
-Phase 8   Typed edges + department manifests next        after Phase 5
-Phase 9   Visual graph editor (Drawflow)     planned     after Phase 8
+Phase 8   Workers system                     ✓ complete  2026-04-27
+Phase 9   Typed edges + department manifests ✓ complete  2026-04-27
+Phase 10  Visual graph editor (Drawflow)     ✓ complete  2026-04-27
 ```
 
-Phases 1–2 are cleanup. Phases 3–5 are the graph. Phases 6–7 are evolution features.
-Phase 5b (upgrade pipeline) is now unblocked and can be taken before or after Phase 8.
+Phases 1–2 are cleanup. Phases 3–5 are the graph. Phases 6–8 are evolution features.
+Phase 5b (upgrade pipeline) is now unblocked and can be taken before or after Phase 9.
 Each phase leaves the system in a fully working state.
