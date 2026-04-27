@@ -1,6 +1,7 @@
 # Run artifacts
 runs/
 accounts/
+memory/
 
 # Brain files (personal decision profile — do not commit)
 brain.md
