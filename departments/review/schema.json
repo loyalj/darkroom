@@ -4,7 +4,7 @@
   "description": "Tests the artifact against scenarios and edge cases; issues a ship/no-ship verdict.",
   "runner": "departments/review/runner.js",
   "inputs":  ["review-spec", "runtime-spec", "factory-manifest", "build-artifact"],
-  "outputs": ["event:ship-approved", "event:ship-rejected"],
+  "outputs": ["build-artifact", "event:ship-approved", "event:ship-rejected"],
   "slots": [
     {
       "id": "scenario-analyst",

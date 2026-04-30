@@ -210,6 +210,12 @@
                 <button class="profiles-mode-btn" data-mode="code">Code</button>
                 <button class="profiles-mode-btn" data-mode="workers">Workers</button>
               </div>
+              <div id="profiles-org-picker">
+                <label class="profiles-org-label">Org Chart</label>
+                <select id="profiles-org-select" class="profiles-org-select">
+                  <option value="">— none —</option>
+                </select>
+              </div>
               <span id="profiles-saved-badge" class="profiles-saved-badge"></span>
               <button id="profiles-save-btn" class="profiles-save-btn" disabled>Save</button>
             </div>
@@ -237,7 +243,23 @@
             <div id="inspector-body">
               <p id="inspector-description"></p>
 
-              <div class="inspector-section">
+              <div class="inspector-section" id="inspector-source-section" style="display:none">
+                <div class="inspector-section-label">Source Profile</div>
+                <select id="inspector-source-select" class="inspector-manager-select">
+                  <option value="">Default (all artifact types)</option>
+                </select>
+                <p class="inspector-manager-hint">Optionally restrict to outputs published by a specific profile's Partial Run node. Enables precise type checking in the graph editor.</p>
+              </div>
+
+              <div class="inspector-section" id="inspector-manager-section">
+                <div class="inspector-section-label">Manager</div>
+                <select id="inspector-manager-select" class="inspector-manager-select">
+                  <option value="">— none —</option>
+                </select>
+                <p class="inspector-manager-hint">Decisions in this department escalate to this role's brain first.</p>
+              </div>
+
+              <div class="inspector-section" id="inspector-options-section">
                 <div class="inspector-section-label">Options</div>
                 <label class="inspector-option">
                   <input type="checkbox" id="inspector-budget-check">
@@ -260,8 +282,7 @@
         <div class="panel-header">
           <h2>Factory Staff</h2>
           <button id="staff-refresh-btn" class="memory-refresh-btn">↺ Refresh</button>
-          <button id="org-interview-btn" class="org-interview-btn" disabled>New Role</button>
-          <button id="staff-new-worker-btn" class="org-interview-btn">+ New Worker</button>
+          <button id="org-interview-btn" class="org-interview-btn" disabled>Run Interview</button>
         </div>
         <div id="org-body">
           <div id="org-sidebar"></div>
@@ -301,7 +322,8 @@
         <div id="orgcharts-body">
           <div id="orgcharts-sidebar"></div>
           <div id="orgcharts-main">
-            <div class="empty-state">
+            <div id="orgcharts-canvas-host"></div>
+            <div id="orgcharts-canvas-empty" class="empty-state">
               <span>Select a profile</span>
               <span class="hint">The org hierarchy will appear here.</span>
             </div>

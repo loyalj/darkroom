@@ -727,6 +727,7 @@ app.get("/api/runs/:id/stream", (req, res) => {
 
 app.get("/api/profiles", (req, res) => {
   const profilesDir = path.join(__dirname, "profiles");
+  const orgProfilesDir = path.join(__dirname, "org", "profiles");
   if (!fs.existsSync(profilesDir)) return res.json([]);
   const files = fs.readdirSync(profilesDir)
     .filter((f) => f.endsWith(".json"))
@@ -734,12 +735,25 @@ app.get("/api/profiles", (req, res) => {
       const name = f.replace(/\.json$/, "");
       try {
         const profile = JSON.parse(fs.readFileSync(path.join(profilesDir, f), "utf8"));
-        return { name, description: profile.description ?? "", requiresRun: profile.requiresRun ?? false, nodeCount: profile.nodes?.length ?? 0, nodes: profile.nodes?.map((n) => n.id) ?? [] };
+        const orgProfile = profile.orgProfile ?? null;
+        const orgProfileValid = orgProfile
+          ? fs.existsSync(path.join(orgProfilesDir, `${orgProfile}.json`))
+          : false;
+        return { name, description: profile.description ?? "", requiresRun: profile.requiresRun ?? false, nodeCount: profile.nodes?.length ?? 0, nodes: profile.nodes?.map((n) => n.id) ?? [], orgProfile, orgProfileValid };
       } catch {
-        return { name, nodeCount: 0, nodes: [], error: true };
+        return { name, nodeCount: 0, nodes: [], error: true, orgProfile: null, orgProfileValid: false };
       }
     });
   res.json(files);
+});
+
+app.get("/api/org-profiles", (req, res) => {
+  try {
+    org.reloadAll();
+    res.json(org.loadProfiles());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get("/api/profiles/:name", (req, res) => {
@@ -773,6 +787,13 @@ app.put("/api/profiles/:name", (req, res) => {
 // ---------------------------------------------------------------------------
 // Departments
 // ---------------------------------------------------------------------------
+
+app.get("/api/special-nodes", (req, res) => {
+  const p = path.join(__dirname, "special-nodes.json");
+  if (!fs.existsSync(p)) return res.json({});
+  try { res.json(JSON.parse(fs.readFileSync(p, "utf8"))); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 app.get("/api/departments", (req, res) => {
   const p = path.join(__dirname, "departments.json");
@@ -827,6 +848,22 @@ app.post("/api/launch", (req, res) => {
             break;
           }
         } catch {}
+      }
+    }
+  }
+
+  // Validate org chart for new runs (resumes inherit the already-validated run)
+  if (!resumeId) {
+    const profilePath = path.join(__dirname, "profiles", `${resolvedProfile}.json`);
+    if (fs.existsSync(profilePath)) {
+      let factoryProfile;
+      try { factoryProfile = JSON.parse(fs.readFileSync(profilePath, "utf8")); } catch {}
+      if (!factoryProfile?.orgProfile) {
+        return res.status(400).json({ error: `Profile "${resolvedProfile}" has no org chart configured. Set one in Factory Profiles before launching.` });
+      }
+      const orgProfilePath = path.join(__dirname, "org", "profiles", `${factoryProfile.orgProfile}.json`);
+      if (!fs.existsSync(orgProfilePath)) {
+        return res.status(400).json({ error: `Org chart "${factoryProfile.orgProfile}" no longer exists. Update the profile's org chart before launching.` });
       }
     }
   }

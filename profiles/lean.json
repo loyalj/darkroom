@@ -6,6 +6,7 @@
     {
       "id": "design",
       "runner": "departments/design/runner.js",
+      "manager": "ceo",
       "skipIf": "handoff/build-spec.md",
       "memory": {
         "readWiki": ["design", "build", "review", "security"],
@@ -16,6 +17,7 @@
     {
       "id": "build",
       "runner": "departments/build/runner.js",
+      "manager": "ceo",
       "skipIf": "artifact/MANIFEST.txt",
       "feedbackLoop": true,
       "memory": {
@@ -27,6 +29,7 @@
     {
       "id": "review",
       "runner": "departments/review/runner.js",
+      "manager": "ceo",
       "skipIfEvent": "ship-approved",
       "memory": {
         "readWiki": ["design", "build", "review", "security"],

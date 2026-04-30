@@ -7,26 +7,88 @@
     {
       "id": "review",
       "runner": "departments/review/runner.js",
+      "manager": "ceo",
       "skipIf": "review/verdict-report.md",
       "memory": {
-        "readWiki": ["design", "build", "review", "security"],
-        "readRuns": ["design", "build", "review", "security"],
+        "readWiki": [
+          "design",
+          "build",
+          "review",
+          "security"
+        ],
+        "readRuns": [
+          "design",
+          "build",
+          "review",
+          "security"
+        ],
         "write": "review"
       }
     },
     {
       "id": "security",
       "runner": "departments/security/runner.js",
+      "manager": "ceo",
       "skipIf": "security/security-verdict-report.md",
       "memory": {
-        "readWiki": ["design", "build", "review", "security"],
-        "readRuns": ["design", "build", "review", "security"],
+        "readWiki": [
+          "design",
+          "build",
+          "review",
+          "security"
+        ],
+        "readRuns": [
+          "design",
+          "build",
+          "review",
+          "security"
+        ],
         "write": "security"
       }
+    },
+    {
+      "id": "previous-run",
+      "type": "previous-run"
     }
   ],
   "edges": [
-    { "from": "review", "to": "security", "type": "forward", "on": "ship-approved", "carries": ["build-artifact"] }
+    {
+      "from": "review",
+      "to": "security",
+      "type": "forward",
+      "on": "ship-approved",
+      "carries": [
+        "build-artifact"
+      ]
+    },
+    {
+      "from": "previous-run",
+      "to": "review",
+      "type": "forward",
+      "carries": [
+        "review-spec",
+        "runtime-spec",
+        "factory-manifest",
+        "build-artifact"
+      ]
+    }
   ],
-  "budgetCheckpoints": ["after:review", "after:security"]
+  "budgetCheckpoints": [
+    "after:review",
+    "after:security"
+  ],
+  "layout": {
+    "review": {
+      "x": 80,
+      "y": 100
+    },
+    "security": {
+      "x": 370,
+      "y": 100
+    },
+    "previous-run": {
+      "x": -192,
+      "y": 137
+    }
+  }
 }

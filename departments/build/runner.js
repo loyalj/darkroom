@@ -183,7 +183,7 @@ async function runArchitectInterview(io, runDir, buildSpec, factoryManifest) {
   if (process.env.FACTORY_AUTO === "1") {
     display.update("thinking...");
     const firstTurn = claudeTurn(systemPrompt, [], (u) => logTokens(runDir, "Build", "Architect Interview", u));
-    display.update("your turn");
+    display.update("brain reviewing...");
     display.log(`\nArchitect: ${clipForDisplay(firstTurn)}\n`, { subtype: "interview" });
     fs.appendFileSync(transcriptPath, `\n## Architect\n\n${firstTurn.trim()}\n`);
     lockedOutput = await runArchitectAutoLoop(
@@ -812,7 +812,9 @@ async function main() {
   const inputs = fileExists(ioCtxPath)
     ? readJSON(ioCtxPath).inputs
     : types.resolve(["design-spec", "runtime-spec", "factory-manifest", "build-artifact"], runDir);
-  const artifactDir = path.dirname(inputs["build-artifact"]);
+  const artifactDir = inputs["build-artifact"]
+    ? path.dirname(inputs["build-artifact"])
+    : path.join(runDir, "artifact");
 
   // Verify required inputs exist
   for (const [typeName, filePath] of Object.entries(inputs)) {

@@ -31,11 +31,11 @@ const state = {
   memory: { data: null, activeDept: "design", activeTab: "wiki", editMode: false },
   // Factory Org
   org: { roles: [], activeRoleId: null, session: null },
-  orgCharts: { profiles: [], activeProfile: null, nodes: [] },
+  orgCharts: { profiles: [], activeProfile: null, nodes: [], drawflow: null },
   // Factory Workers
   workers: { list: [], slots: [], activeId: null },
   // Profiles
-  profiles: { activeName: null, content: null, mode: "preview", drawflow: null, depts: {} },
+  profiles: { activeName: null, content: null, mode: "preview", drawflow: null, depts: {}, specialNodes: {}, partialRunTypes: {}, orgProfile: null },
   // Department colors (loaded from /api/departments, shared across all views)
   deptColors: {},
 };
@@ -519,14 +519,29 @@ function renderActivity() {
     $("#current-step").textContent = header;
   }
 
-  // Most recent status/step event → update sub-status line
-  const lastStatus = [...state.activity].reverse().find(
-    (a) => a.type === "status" || a.type === "step"
-  );
-  if (lastStatus?.status) {
-    statusEl.textContent = `↪ ${lastStatus.status}`;
+  // Most recent status/step event → update sub-status line.
+  // Prefer failReason when the run has errored (never let "your turn" hide a crash).
+  // Also suppress stale status if the phase it belongs to has since finished.
+  if (state.pipelineState?.failReason) {
+    statusEl.textContent = `↪ ${state.pipelineState.failReason.split("\n")[0]}`;
+    statusEl.classList.add("step-status-error");
   } else {
-    statusEl.textContent = "";
+    statusEl.classList.remove("step-status-error");
+    const acts = state.activity;
+    let lastStatusIdx = -1, lastStatusEvt = null;
+    for (let i = acts.length - 1; i >= 0; i--) {
+      if (acts[i].type === "status" || acts[i].type === "step") {
+        lastStatusIdx = i; lastStatusEvt = acts[i]; break;
+      }
+    }
+    const phaseFinished = lastStatusEvt?.dept && acts.slice(lastStatusIdx + 1).some(
+      (a) => a.type === "finish" && a.dept === lastStatusEvt.dept && a.phase === lastStatusEvt.phase
+    );
+    if (lastStatusEvt?.status && !phaseFinished) {
+      statusEl.textContent = `↪ ${lastStatusEvt.status}`;
+    } else {
+      statusEl.textContent = "";
+    }
   }
 
   // Render line events in the scrolling feed
@@ -783,7 +798,23 @@ async function ensureDepts() {
       state.deptColors[id] = typeof val === "string" ? val : (val.color ?? "#888");
     }
   } catch {}
+  await ensureSpecialNodes();
   return state.profiles.depts;
+}
+
+async function ensureSpecialNodes() {
+  if (Object.keys(state.profiles.specialNodes).length) return state.profiles.specialNodes;
+  try {
+    const res = await fetch("/api/special-nodes");
+    state.profiles.specialNodes = await res.json();
+  } catch {}
+  return state.profiles.specialNodes;
+}
+
+const SPECIAL_NODE_TYPES = ["previous-run", "partial-run"];
+
+function getNodeInfo(name) {
+  return state.profiles.depts[name] ?? state.profiles.specialNodes[name] ?? null;
 }
 
 async function ensureDeptColors() {
@@ -857,9 +888,16 @@ function selectLaunchProfile(profile) {
 
 function updateLaunchButton() {
   const btn = $("#launch-btn");
+  const profileData = launchState.profiles.find(p => p.name === launchState.selectedProfile);
   if (!launchState.selectedProfile) {
     btn.disabled = true;
     btn.textContent = "Select a profile";
+  } else if (!profileData?.orgProfile) {
+    btn.disabled = true;
+    btn.textContent = "Profile needs an org chart";
+  } else if (!profileData?.orgProfileValid) {
+    btn.disabled = true;
+    btn.textContent = `Org chart "${profileData.orgProfile}" not found`;
   } else if (launchState.sourceRunRequired && !launchState.sourceRunId) {
     btn.disabled = true;
     btn.textContent = "Select a source run";
@@ -1196,6 +1234,7 @@ async function loadProfiles() {
   list.innerHTML = `<div style="color: var(--muted); padding: 12px 14px; font-size: 12px;">Loading…</div>`;
   await ensureDepts();
   renderPalette();
+  populateOrgSelect();
   try {
     const res = await fetch("/api/profiles");
     const profiles = await res.json();
@@ -1239,6 +1278,8 @@ async function loadProfile(name) {
     editor.value = data.content;
     editor.disabled = false;
     state.profiles.content = data.content;
+    try { state.profiles.orgProfile = JSON.parse(data.content).orgProfile ?? null; } catch { state.profiles.orgProfile = null; }
+    syncOrgSelect();
     $("#profiles-save-btn").disabled = false;
     if (state.profiles.mode === "preview") { initDrawflowCanvas(); loadProfileToCanvas(data.content); }
     if (state.profiles.mode === "workers") renderProfileWorkers();
@@ -1247,6 +1288,26 @@ async function loadProfile(name) {
     editor.value = "";
     errEl.textContent = "Failed to load profile.";
   }
+}
+
+// Populate the org chart dropdown with available org profiles, then sync selection.
+async function populateOrgSelect() {
+  const sel = $("#profiles-org-select");
+  if (!sel) return;
+  try {
+    const res = await fetch("/api/org-profiles");
+    const orgProfiles = await res.json();
+    sel.innerHTML = `<option value="">— none —</option>` +
+      orgProfiles.map(p => `<option value="${escHtml(p.name)}">${escHtml(p.name)}${p.description ? ` — ${escHtml(p.description)}` : ""}</option>`).join("");
+  } catch {
+    sel.innerHTML = `<option value="">— none —</option>`;
+  }
+  syncOrgSelect();
+}
+
+function syncOrgSelect() {
+  const sel = $("#profiles-org-select");
+  if (sel) sel.value = state.profiles.orgProfile ?? "";
 }
 
 async function saveProfile() {
@@ -1338,7 +1399,7 @@ function buildNodeHtml(nodeDef, deptInfo, profile) {
   const maxRows = Math.max(fileIns.length, fileOuts.length);
   let typeRows = "";
   for (let r = 0; r < maxRows; r++) {
-    const inT  = fileIns[r]  ? `<span class="cn-type" style="color:${typeColor(fileIns[r])}">${escHtml(fileIns[r])}</span>`  : "";
+    const inT  = fileIns[r]  ? `<span class="cn-type" data-type="${escHtml(fileIns[r])}" style="color:${typeColor(fileIns[r])}">${escHtml(fileIns[r])}</span>`  : "";
     const outT = fileOuts[r] ? `<span class="cn-type" style="color:${typeColor(fileOuts[r])}">${escHtml(fileOuts[r])}</span>` : "";
     typeRows += `<div class="cn-type-row"><div class="cn-type-in">${inT}</div><div class="cn-type-out">${outT}</div></div>`;
   }
@@ -1379,6 +1440,93 @@ function buildNodeHtml(nodeDef, deptInfo, profile) {
 </div>`;
 }
 
+function buildSpecialNodeHtml(nodeId, nodeDef, snInfo) {
+  const label = (snInfo?.label ?? nodeId).toUpperCase();
+  const color = snInfo?.color ?? "#9ca3af";
+  let subline = "";
+  if (nodeId === "previous-run") {
+    const src = nodeDef?.sourceProfile;
+    subline = src ? `source: ${escHtml(src)}` : "default — all artifact types";
+  } else if (nodeId === "partial-run") {
+    subline = "collects &amp; publishes outputs";
+  }
+  return `<div class="sn-inner">
+  <div class="sn-head">
+    <span class="sn-label" style="color:${escHtml(color)}">${label}</span>
+  </div>
+  <div class="sn-subline">${subline}</div>
+</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Live reachability checker
+// ---------------------------------------------------------------------------
+
+function runReachabilityCheck() {
+  const df = state.profiles.drawflow;
+  if (!df) return;
+
+  const exported = df.export();
+  const dfNodes  = exported?.drawflow?.Home?.data ?? {};
+  if (Object.keys(dfNodes).length === 0) return;
+
+  const dfIdToName = {};
+  const nameToNumId = {};
+  for (const [numId, node] of Object.entries(dfNodes)) {
+    dfIdToName[numId] = node.name;
+    nameToNumId[node.name] = numId;
+  }
+
+  // Build predecessor map: name → [name]
+  const predecessors = {};
+  for (const name of Object.keys(nameToNumId)) predecessors[name] = [];
+  for (const [, node] of Object.entries(dfNodes)) {
+    for (const conn of (node.outputs?.output_1?.connections ?? [])) {
+      const toName = dfIdToName[conn.node];
+      if (toName) predecessors[toName].push(node.name);
+    }
+  }
+
+  // Get artifact output types for a node (non-event)
+  function getOutputTypes(name) {
+    if (name === "previous-run") {
+      let profile;
+      try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch {}
+      const nd  = (profile?.nodes ?? []).find(n => n.id === "previous-run");
+      const src = nd?.sourceProfile;
+      if (src && state.profiles.partialRunTypes[src]) return state.profiles.partialRunTypes[src];
+    }
+    const info = getNodeInfo(name);
+    return (info?.outputs ?? []).filter(t => !t.startsWith("event:"));
+  }
+
+  // Compute reachable ancestor types for each node (transitive, cycle-safe)
+  const cache = {};
+  function reachable(name, visiting = new Set()) {
+    if (cache[name]) return cache[name];
+    if (visiting.has(name)) return new Set();
+    visiting.add(name);
+    const result = new Set();
+    for (const pred of (predecessors[name] ?? [])) {
+      for (const t of getOutputTypes(pred)) result.add(t);
+      for (const t of reachable(pred, new Set(visiting))) result.add(t);
+    }
+    cache[name] = result;
+    return result;
+  }
+
+  // Update DOM satisfaction state for each department node
+  for (const [numId, dfNode] of Object.entries(dfNodes)) {
+    if (SPECIAL_NODE_TYPES.includes(dfNode.name)) continue;
+    const nodeEl = document.getElementById(`node-${numId}`);
+    if (!nodeEl) continue;
+    const avail = reachable(dfNode.name);
+    nodeEl.querySelectorAll(".cn-type-in .cn-type[data-type]").forEach(span => {
+      span.classList.toggle("cn-type-unmet", !avail.has(span.dataset.type));
+    });
+  }
+}
+
 function initDrawflowCanvas() {
   if (state.profiles.drawflow) return;
   const host = $("#profiles-canvas-host");
@@ -1407,7 +1555,7 @@ function initDrawflowCanvas() {
 
   df.on("nodeMoved",         markDirty);
   df.on("nodeRemoved",       markDirty);
-  df.on("connectionRemoved", markDirty);
+  df.on("connectionRemoved", () => { markDirty(); runReachabilityCheck(); });
   df.on("nodeCreated",       markDirty);
 
   df.on("nodeSelected",   (numId) => {
@@ -1442,20 +1590,33 @@ function initDrawflowCanvas() {
   }, { passive: false });
 
   df.on("connectionCreated", ({ output_id, input_id, output_class, input_class }) => {
-    const fromNode = df.getNodeFromId(output_id);
-    const toNode   = df.getNodeFromId(input_id);
-    const depts    = state.profiles.depts;
-    const srcOuts  = (depts[fromNode?.name]?.outputs ?? []).filter(t => !t.startsWith("event:"));
-    const tgtIns   = depts[toNode?.name]?.inputs ?? [];
+    const fromNode  = df.getNodeFromId(output_id);
+    const toNode    = df.getNodeFromId(input_id);
+    const fromInfo  = getNodeInfo(fromNode?.name);
+    const toInfo    = getNodeInfo(toNode?.name);
+    const allOuts   = fromInfo?.outputs ?? [];
+    const srcOuts   = allOuts.filter(t => !t.startsWith("event:"));
+    const tgtIns    = toInfo?.inputs ?? [];
 
-    if (srcOuts.length > 0 && tgtIns.length > 0 && !srcOuts.some(t => tgtIns.includes(t))) {
+    const errEl = $("#profiles-editor-error");
+    function reject(msg) {
       df.removeSingleConnection(output_id, input_id, output_class, input_class);
-      const errEl = $("#profiles-editor-error");
-      errEl.textContent = `Incompatible: ${fromNode?.name ?? "?"} outputs don't match ${toNode?.name ?? "?"} inputs`;
-      setTimeout(() => { if (errEl.textContent.startsWith("Incompatible")) errEl.textContent = ""; }, 3000);
-      return;
+      errEl.textContent = msg;
+      setTimeout(() => { errEl.textContent = ""; }, 3000);
     }
+
+    // Source produces outputs but they're all events — can't carry artifacts forward
+    if (allOuts.length > 0 && srcOuts.length === 0) {
+      return reject(`${fromNode?.name ?? "?"} only produces events — no artifact to carry forward`);
+    }
+
+    // Source has artifact outputs but none match the target's inputs
+    if (srcOuts.length > 0 && tgtIns.length > 0 && !srcOuts.some(t => tgtIns.includes(t))) {
+      return reject(`Incompatible: ${fromNode?.name ?? "?"} outputs don't match ${toNode?.name ?? "?"} inputs`);
+    }
+
     markDirty();
+    runReachabilityCheck();
   });
 }
 
@@ -1485,12 +1646,18 @@ function loadProfileToCanvas(jsonText) {
 
   nodes.forEach((node, idx) => {
     const pos       = layout[node.id] ?? autoPos[idx];
-    const html      = buildNodeHtml(node, depts[node.id], profile);
-    const numInputs = (depts[node.id]?.inputs ?? []).length > 0 ? 1 : 0;
+    const isSpecial = SPECIAL_NODE_TYPES.includes(node.id);
+    const snInfo    = isSpecial ? (state.profiles.specialNodes[node.id] ?? {}) : null;
+    const html      = isSpecial
+      ? buildSpecialNodeHtml(node.id, node, snInfo)
+      : buildNodeHtml(node, depts[node.id], profile);
+    const numInputs  = isSpecial ? ((snInfo?.inputs ?? []).length > 0 ? 1 : 0) : ((depts[node.id]?.inputs ?? []).length > 0 ? 1 : 0);
+    const numOutputs = isSpecial ? ((snInfo?.outputs ?? []).length > 0 ? 1 : 0) : 1;
+    const nodeClass  = isSpecial ? `special-node special-${node.id}` : `dept-${node.id}`;
     const dfId = df.addNode(
-      node.id, numInputs, 1,
+      node.id, numInputs, numOutputs,
       pos.x, pos.y,
-      `dept-${node.id}`,
+      nodeClass,
       { profileNodeId: node.id },
       html
     );
@@ -1504,6 +1671,9 @@ function loadProfileToCanvas(jsonText) {
     if (fromId == null || toId == null) continue;
     try { df.addConnection(fromId, toId, "output_1", "input_1"); } catch {}
   }
+
+  // Run live reachability check after loading so existing graphs show satisfaction state
+  setTimeout(runReachabilityCheck, 50);
 }
 
 function canvasToProfile() {
@@ -1518,6 +1688,13 @@ function canvasToProfile() {
   const dfIdToName = {};
   for (const [dfId, dfNode] of Object.entries(dfNodes)) dfIdToName[dfId] = dfNode.name;
 
+  // Sync org profile from picker state
+  if (state.profiles.orgProfile) {
+    profile.orgProfile = state.profiles.orgProfile;
+  } else {
+    delete profile.orgProfile;
+  }
+
   // Update layout block from current positions
   profile.layout = {};
   for (const dfNode of Object.values(dfNodes)) {
@@ -1530,11 +1707,15 @@ function canvasToProfile() {
   const existingIds = new Set((profile.nodes ?? []).map(n => n.id));
   for (const dfNode of Object.values(dfNodes)) {
     if (!existingIds.has(dfNode.name)) {
-      profile.nodes.push({
-        id: dfNode.name,
-        runner: `departments/${dfNode.name}/runner.js`,
-        memory: { readWiki: ["design","build","review","security"], readRuns: ["design","build","review","security"], write: dfNode.name },
-      });
+      if (SPECIAL_NODE_TYPES.includes(dfNode.name)) {
+        profile.nodes.push({ id: dfNode.name, type: dfNode.name });
+      } else {
+        profile.nodes.push({
+          id: dfNode.name,
+          runner: `departments/${dfNode.name}/runner.js`,
+          memory: { readWiki: ["design","build","review","security"], readRuns: ["design","build","review","security"], write: dfNode.name },
+        });
+      }
     }
   }
 
@@ -1549,9 +1730,8 @@ function canvasToProfile() {
       if (existing) {
         fwdEdges.push(existing);
       } else {
-        const depts   = state.profiles.depts;
-        const srcOuts = depts[dfNode.name]?.outputs ?? [];
-        const tgtIns  = depts[toName]?.inputs ?? [];
+        const srcOuts = (getNodeInfo(dfNode.name)?.outputs ?? []).filter(t => !t.startsWith("event:"));
+        const tgtIns  = getNodeInfo(toName)?.inputs ?? [];
         const carries = srcOuts.filter(t => tgtIns.includes(t));
         fwdEdges.push({ from: dfNode.name, to: toName, type: "forward", ...(carries.length ? { carries } : {}) });
       }
@@ -1579,6 +1759,26 @@ function renderPalette() {
     chip.addEventListener("click", () => addDeptNodeToCanvas(id));
     palette.appendChild(chip);
   }
+
+  // Special nodes section
+  const snNodes = state.profiles.specialNodes ?? {};
+  if (Object.keys(snNodes).length > 0) {
+    const header = document.createElement("div");
+    header.className = "profiles-palette-header";
+    header.textContent = "Pipeline Structure";
+    palette.appendChild(header);
+    for (const [id, info] of Object.entries(snNodes)) {
+      const chip = document.createElement("div");
+      chip.className = "palette-dept palette-special";
+      chip.dataset.deptId = id;
+      chip.textContent = info.label ?? id;
+      chip.style.borderColor = info.color ?? "#9ca3af";
+      chip.style.color       = info.color ?? "#9ca3af";
+      chip.title = `Add ${info.label ?? id} node to canvas`;
+      chip.addEventListener("click", () => addSpecialNodeToCanvas(id));
+      palette.appendChild(chip);
+    }
+  }
 }
 
 function syncPaletteState() {
@@ -1599,7 +1799,6 @@ function addDeptNodeToCanvas(deptId) {
   let profile;
   try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { profile = {}; }
 
-  // Find an open x position
   const exported  = df.export();
   const dfNodes   = exported?.drawflow?.Home?.data ?? {};
   const maxX      = Object.values(dfNodes).reduce((m, n) => Math.max(m, n.pos_x + 200), 60);
@@ -1612,42 +1811,110 @@ function addDeptNodeToCanvas(deptId) {
   df.addNode(deptId, numInputs, 1, maxX, 100, `dept-${deptId}`, { profileNodeId: deptId }, html);
 }
 
+function addSpecialNodeToCanvas(snType) {
+  const df = state.profiles.drawflow;
+  if (!df) return;
+
+  // Only one instance of each special node per profile
+  const exported = df.export();
+  const dfNodes  = exported?.drawflow?.Home?.data ?? {};
+  if (Object.values(dfNodes).some(n => n.name === snType)) return;
+
+  const snInfo    = state.profiles.specialNodes[snType] ?? {};
+  const html      = buildSpecialNodeHtml(snType, {}, snInfo);
+  const numInputs  = (snInfo.inputs  ?? []).length > 0 ? 1 : 0;
+  const numOutputs = (snInfo.outputs ?? []).length > 0 ? 1 : 0;
+  const maxX       = Object.values(dfNodes).reduce((m, n) => Math.max(m, n.pos_x + 200), 60);
+  df.addNode(snType, numInputs, numOutputs, maxX, 100, `special-node special-${snType}`, { profileNodeId: snType }, html);
+}
+
 // ---------------------------------------------------------------------------
 // Node inspector
 // ---------------------------------------------------------------------------
 
-function showNodeInspector(deptName) {
-  const deptInfo = state.profiles.depts[deptName];
-  if (!deptInfo) return;
+function showNodeInspector(nodeName) {
+  const isSpecial = SPECIAL_NODE_TYPES.includes(nodeName);
+  const deptInfo  = isSpecial ? null : state.profiles.depts[nodeName];
+  const snInfo    = isSpecial ? (state.profiles.specialNodes[nodeName] ?? {}) : null;
+  if (!deptInfo && !snInfo) return;
 
   let profile;
   try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { profile = {}; }
+  const nodeDef = (profile.nodes ?? []).find(n => n.id === nodeName);
 
-  const color      = state.deptColors[deptName] ?? "#888";
-  const hasBudget  = (profile.budgetCheckpoints ?? []).includes(`after:${deptName}`);
-
-  $("#inspector-dept-name").textContent = deptName.toUpperCase();
+  const color = isSpecial ? (snInfo.color ?? "#9ca3af") : (state.deptColors[nodeName] ?? "#888");
+  $("#inspector-dept-name").textContent = (isSpecial ? (snInfo.label ?? nodeName) : nodeName).toUpperCase();
   $("#inspector-dept-name").style.color = color;
-  $("#inspector-description").textContent = deptInfo.description ?? "";
-  $("#inspector-budget-check").checked = hasBudget;
+  $("#inspector-description").textContent = isSpecial ? (snInfo.description ?? "") : (deptInfo.description ?? "");
 
-  const slots       = deptInfo.slots ?? [];
-  const slotsSection = $("#inspector-slots-section");
-  const slotsEl     = $("#inspector-slots");
-  if (slots.length > 0) {
-    slotsEl.innerHTML = slots.map(s => `
-      <div class="inspector-slot">
-        <span class="inspector-slot-name">${escHtml(s.name)}</span>
-        <span class="inspector-slot-type">${escHtml(s.description ?? "")}</span>
-      </div>`).join("");
-    slotsSection.style.display = "flex";
-  } else {
-    slotsSection.style.display = "none";
+  // Show/hide sections based on whether this is a special node or department
+  const _sec = (id, show) => { const el = $(`#${id}`); if (el) el.style.display = show ? "flex" : "none"; };
+  _sec("inspector-source-section",  nodeName === "previous-run");
+  _sec("inspector-manager-section", !isSpecial);
+  _sec("inspector-options-section", !isSpecial);
+  _sec("inspector-slots-section",   false); // controlled below for depts
+
+  if (!isSpecial) {
+    const hasBudget  = (profile.budgetCheckpoints ?? []).includes(`after:${nodeName}`);
+    const currentMgr = nodeDef?.manager ?? "";
+    $("#inspector-budget-check").checked = hasBudget;
+
+    // Manager dropdown — scoped to the linked org chart
+    const mgSel = $("#inspector-manager-select");
+    function _populateManagerSelect(roles) {
+      mgSel.disabled = false;
+      mgSel.innerHTML = `<option value="">— none —</option>` +
+        roles.map(r => `<option value="${escHtml(r.id)}"${r.id === currentMgr ? " selected" : ""}>${escHtml(r.name)} (${escHtml(r.id)})</option>`).join("");
+    }
+    if (!state.profiles.orgProfile) {
+      mgSel.disabled = true;
+      mgSel.innerHTML = `<option value="">Set an org chart first</option>`;
+    } else {
+      mgSel.innerHTML = `<option value="">Loading…</option>`;
+      fetch(`/api/org?profile=${encodeURIComponent(state.profiles.orgProfile)}`)
+        .then(r => r.json())
+        .then(data => _populateManagerSelect((data.nodes ?? []).map(n => n.role).filter(Boolean)))
+        .catch(() => { mgSel.disabled = false; mgSel.innerHTML = `<option value="">— none —</option>`; });
+    }
+
+    // Slots
+    const slots = deptInfo.slots ?? [];
+    const slotsEl = $("#inspector-slots");
+    if (slots.length > 0) {
+      slotsEl.innerHTML = slots.map(s => `
+        <div class="inspector-slot">
+          <span class="inspector-slot-name">${escHtml(s.name)}</span>
+          <span class="inspector-slot-type">${escHtml(s.description ?? "")}</span>
+        </div>`).join("");
+      _sec("inspector-slots-section", true);
+    }
+  }
+
+  if (nodeName === "previous-run") {
+    populateSourceProfileDropdown(nodeDef?.sourceProfile ?? "");
   }
 
   const inspector = $("#profiles-inspector");
   inspector.classList.add("visible");
-  inspector.dataset.deptName = deptName;
+  inspector.dataset.deptName = nodeName;
+}
+
+async function populateSourceProfileDropdown(currentSource) {
+  const sel = $("#inspector-source-select");
+  sel.innerHTML = `<option value="">Default (all artifact types)</option>`;
+  try {
+    const res = await fetch("/api/profiles");
+    const profiles = await res.json();
+    for (const p of profiles) {
+      if (p.name === state.profiles.activeName) continue; // don't reference self
+      // Only show profiles that might have a partial-run node
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.name;
+      opt.selected = p.name === currentSource;
+      sel.appendChild(opt);
+    }
+  } catch {}
 }
 
 function hideNodeInspector() {
@@ -2028,11 +2295,14 @@ function renderStaffSidebar() {
   const sidebar = $("#org-sidebar");
   sidebar.innerHTML = "";
 
+  const scroll = document.createElement("div");
+  scroll.className = "staff-sidebar-scroll";
+
   // Brain Roles section
   const rolesHeader = document.createElement("div");
   rolesHeader.className = "staff-section-header";
   rolesHeader.textContent = "Brain Roles";
-  sidebar.appendChild(rolesHeader);
+  scroll.appendChild(rolesHeader);
 
   for (const role of state.org.roles) {
     const item = document.createElement("div");
@@ -2045,21 +2315,14 @@ function renderStaffSidebar() {
       <span class="org-role-status ${statusClass}">${statusLabel}</span>
     `;
     item.addEventListener("click", () => selectOrgRole(role.id));
-    sidebar.appendChild(item);
+    scroll.appendChild(item);
   }
-
-  const newRoleBtn = document.createElement("button");
-  newRoleBtn.className = "org-new-role-btn";
-  newRoleBtn.textContent = state.org.session ? "Session in progress…" : "+ New Role";
-  newRoleBtn.disabled = !!state.org.session;
-  newRoleBtn.addEventListener("click", startCreateRole);
-  sidebar.appendChild(newRoleBtn);
 
   // Workers section
   const workersHeader = document.createElement("div");
   workersHeader.className = "staff-section-header";
   workersHeader.textContent = "Workers";
-  sidebar.appendChild(workersHeader);
+  scroll.appendChild(workersHeader);
 
   const groups = {};
   for (const w of state.workers.list) {
@@ -2072,35 +2335,85 @@ function renderStaffSidebar() {
     const empty = document.createElement("div");
     empty.style.cssText = "color:var(--muted);padding:8px 14px;font-size:12px;";
     empty.textContent = "No workers yet.";
-    sidebar.appendChild(empty);
+    scroll.appendChild(empty);
   } else {
-    for (const [key, group] of Object.entries(groups)) {
-      const label = document.createElement("div");
-      label.className = "workers-slot-group";
-      label.textContent = key;
-      sidebar.appendChild(label);
-      for (const w of group) {
-        const item = document.createElement("div");
-        item.className = "worker-item" + (w.id === state.workers.activeId ? " active" : "");
-        item.innerHTML = `<span class="worker-item-name">${escHtml(w.name)}</span><span class="worker-item-slot">${escHtml(w.slotType ?? "")}</span>`;
-        item.addEventListener("click", () => selectWorker(w));
-        sidebar.appendChild(item);
-      }
+    for (const w of state.workers.list) {
+      const item = document.createElement("div");
+      item.className = "worker-item" + (w.id === state.workers.activeId ? " active" : "");
+      const slotLabel = w.department ? `${w.department} · ${w.slotType ?? ""}` : (w.slotType ?? "");
+      item.innerHTML = `<span class="worker-item-name">${escHtml(w.name)}</span><span class="worker-item-slot">${escHtml(slotLabel)}</span>`;
+      item.addEventListener("click", () => selectWorker(w));
+      scroll.appendChild(item);
     }
   }
+
+  sidebar.appendChild(scroll);
+
+  // Pinned footer — New + split button
+  const fabWrap = document.createElement("div");
+  fabWrap.className = "staff-new-fab-wrap";
+
+  const menu = document.createElement("div");
+  menu.className = "staff-new-menu";
+
+  const roleItem = document.createElement("div");
+  roleItem.className = "staff-new-menu-item";
+  roleItem.textContent = "New Role";
+  roleItem.addEventListener("click", () => { menu.style.display = "none"; startCreateRole(); });
+
+  const workerItem = document.createElement("div");
+  workerItem.className = "staff-new-menu-item";
+  workerItem.textContent = "New Worker";
+  workerItem.addEventListener("click", () => { menu.style.display = "none"; startCreateWorker(); });
+
+  menu.appendChild(roleItem);
+  menu.appendChild(workerItem);
+
+  const fab = document.createElement("button");
+  fab.className = "staff-new-fab";
+  fab.disabled = !!state.org.session;
+  fab.innerHTML = `<span class="staff-new-fab-label">New +</span><span class="staff-new-fab-arrow">▾</span>`;
+  fab.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (menu.style.display === "none" || !menu.style.display) {
+      menu.style.display = "block";
+      const close = () => { menu.style.display = "none"; document.removeEventListener("click", close); };
+      document.addEventListener("click", close);
+    } else {
+      menu.style.display = "none";
+    }
+  });
+
+  fabWrap.appendChild(menu);
+  fabWrap.appendChild(fab);
+  sidebar.appendChild(fabWrap);
 }
 
 async function startCreateRole() {
-  const btn = $(".org-new-role-btn");
-  if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+  const fab = $(".staff-new-fab");
+  if (fab) fab.disabled = true;
   try {
     const res = await fetch("/api/org/roles/create", { method: "POST" });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error ?? "Failed to start HR session");
     await checkHrSession();
   } catch (e) {
-    if (btn) { btn.disabled = false; btn.textContent = "+ New Role"; }
+    renderStaffSidebar();
     alert(`HR error: ${e.message}`);
+  }
+}
+
+async function startCreateWorker() {
+  const fab = $(".staff-new-fab");
+  if (fab) fab.disabled = true;
+  try {
+    const res = await fetch("/api/workers/create", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? "Failed to start worker design session.");
+    await checkHrSession();
+  } catch (e) {
+    renderStaffSidebar();
+    alert(`Worker error: ${e.message}`);
   }
 }
 
@@ -2369,38 +2682,163 @@ function renderOrgChartsSidebar() {
   }
 }
 
+function initOrgChartsCanvas() {
+  if (state.orgCharts.drawflow) return;
+  const host = $("#orgcharts-canvas-host");
+  if (!host || typeof Drawflow === "undefined") return;
+
+  const df = new Drawflow(host);
+  df.reroute = false;
+  df.force_first_input = false;
+  df.editor_mode = "view";
+  df.start();
+  state.orgCharts.drawflow = df;
+
+  df.zoom_max = 2;
+  df.zoom_min = 0.3;
+  df.zoom_value = 0.1;
+
+  const syncBg = () => {
+    const x    = df.canvas_x ?? 0;
+    const y    = df.canvas_y ?? 0;
+    const zoom = df.zoom ?? 1;
+    const size = 24 * zoom;
+    host.style.backgroundPosition = `${((x % size) + size) % size}px ${((y % size) + size) % size}px`;
+    host.style.backgroundSize     = `${size}px ${size}px`;
+  };
+  df._syncBg = syncBg;
+  df.on("translate", syncBg);
+  df.on("zoom",      syncBg);
+  host.addEventListener("mousemove", syncBg);
+  host.addEventListener("wheel", (e) => {
+    if (e.ctrlKey) return;
+    e.preventDefault();
+    if (e.deltaY < 0) df.zoom_in();
+    else df.zoom_out();
+    syncBg();
+  }, { passive: false });
+}
+
 function renderOrgChartsTree() {
-  const main  = $("#orgcharts-main");
-  const nodes = state.orgCharts.nodes ?? [];
+  initOrgChartsCanvas();
+  const df      = state.orgCharts.drawflow;
+  const nodes   = state.orgCharts.nodes ?? [];
+  const emptyEl = $("#orgcharts-canvas-empty");
+
+  if (!df) return;
+  df.clear();
 
   if (nodes.length === 0) {
-    main.innerHTML = `<div class="empty-state"><span>No roles in this profile</span><span class="hint">Add roles via Factory Roles to populate the org chart.</span></div>`;
+    if (emptyEl) emptyEl.style.display = "flex";
     return;
   }
+  if (emptyEl) emptyEl.style.display = "none";
 
-  const childrenOf = {};
-  const allIds = new Set(nodes.map((n) => n.roleId));
-  for (const node of nodes) {
-    const parent = node.escalatesTo ?? "__human__";
+  // Build parent→children map. Roles with no known parent escalate to Human.
+  const HUMAN    = "__human__";
+  const allRoleIds = new Set(nodes.map((n) => n.roleId));
+  const childrenOf = { [HUMAN]: [] };
+  const byRoleId   = {};
+  for (const n of nodes) {
+    byRoleId[n.roleId] = n;
+    const parent = (n.escalatesTo && allRoleIds.has(n.escalatesTo)) ? n.escalatesTo : HUMAN;
     if (!childrenOf[parent]) childrenOf[parent] = [];
-    childrenOf[parent].push(node);
+    childrenOf[parent].push(n.roleId);
   }
 
-  function renderNode(node) {
-    const statusClass = node.hasBrain ? "org-node-ready" : "org-node-missing";
-    const children    = childrenOf[node.roleId] ?? [];
-    const card = `<div class="org-node-card ${statusClass}" data-role-id="${escHtml(node.role.id)}">
-      <span class="org-node-name">${escHtml(node.role.name)}</span>
-      <span class="org-node-dot"></span>
+  // Top-down tree layout: depth→Y, slot→X.
+  // Leaf nodes consume horizontal slots; parents center over their children.
+  const NODE_W = 260, NODE_H = 90, H_GAP = 40, V_GAP = 80;
+  const positions = {};
+  let slot = 0;
+
+  function placeNode(id, depth) {
+    const children = childrenOf[id] ?? [];
+    if (children.length === 0) {
+      positions[id] = { x: slot * (NODE_W + H_GAP), y: depth * (NODE_H + V_GAP) };
+      slot++;
+      return;
+    }
+    for (const cid of children) placeNode(cid, depth + 1);
+    const firstX = positions[children[0]].x;
+    const lastX  = positions[children[children.length - 1]].x;
+    positions[id] = { x: (firstX + lastX) / 2, y: depth * (NODE_H + V_GAP) };
+  }
+  placeNode(HUMAN, 0);
+
+  // Add Drawflow nodes
+  const dfIds = {};
+  for (const [id, pos] of Object.entries(positions)) {
+    const isHuman   = id === HUMAN;
+    const n         = byRoleId[id];
+    const hasOutput = (childrenOf[id] ?? []).length > 0;
+
+    const name = isHuman ? "Human" : (n.role?.name ?? n.roleId);
+    const desc = (!isHuman && n.role?.description) ? n.role.description : "";
+    const dotHtml = isHuman ? "" : n.hasBrain
+      ? `<span class="org-canvas-dot ready"></span>`
+      : `<span class="org-canvas-dot missing"></span>`;
+    const html = `<div class="org-canvas-card">
+      <div class="org-canvas-header">
+        ${dotHtml}
+        <span class="org-canvas-name">${escHtml(name)}</span>
+      </div>
+      ${desc ? `<span class="org-canvas-desc">${escHtml(desc)}</span>` : ""}
     </div>`;
-    if (children.length === 0) return `<li>${card}</li>`;
-    return `<li>${card}<ul>${children.map(renderNode).join("")}</ul></li>`;
+
+    const dfId = df.addNode(
+      isHuman ? "human" : "role",
+      isHuman ? 0 : 1,
+      hasOutput ? 1 : 0,
+      pos.x, pos.y,
+      isHuman ? "org-human-node" : "org-role-node",
+      { roleId: id },
+      html
+    );
+    dfIds[id] = dfId;
   }
 
-  const roots = nodes.filter((n) => !n.escalatesTo || !allIds.has(n.escalatesTo));
-  const humanCard = `<div class="org-node-card org-node-human"><span class="org-node-name">Human</span><span class="org-node-dot"></span></div>`;
+  // Draw connections parent→child, track order for path patching
+  const connList = [];
+  for (const n of nodes) {
+    const parent = (n.escalatesTo && allRoleIds.has(n.escalatesTo)) ? n.escalatesTo : HUMAN;
+    if (dfIds[parent] != null && dfIds[n.roleId] != null) {
+      df.addConnection(dfIds[parent], dfIds[n.roleId], "output_1", "input_1");
+      connList.push({ srcId: parent, dstId: n.roleId });
+    }
+  }
 
-  main.innerHTML = `<div class="org-chart"><ul><li>${humanCard}<ul>${roots.map(renderNode).join("")}</ul></li></ul></div>`;
+  // Center horizontally; pin root near top with padding
+  const host = $("#orgcharts-canvas-host");
+  if (host && df.precanvas) {
+    const xs   = Object.values(positions).map((p) => p.x);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const treeW = maxX - minX + NODE_W;
+    const hostW = host.offsetWidth || 600;
+    df.canvas_x = Math.round((hostW - treeW) / 2 - minX);
+    df.canvas_y = 40;
+    df.precanvas.style.transform = `translate(${df.canvas_x}px, ${df.canvas_y}px)`;
+    if (df._syncBg) df._syncBg();
+  }
+
+  // Patch Drawflow's horizontal beziers with vertical control points so
+  // connections flow top→bottom rather than left→right.
+  if (df._patchTimer) clearTimeout(df._patchTimer);
+  df._patchTimer = setTimeout(() => {
+    const pathEls = $("#orgcharts-canvas-host")?.querySelectorAll(".drawflow .connection .main-path");
+    if (!pathEls) return;
+    connList.forEach((conn, i) => {
+      const pathEl = pathEls[i];
+      if (!pathEl) return;
+      const sp = positions[conn.srcId];
+      const dp = positions[conn.dstId];
+      if (!sp || !dp) return;
+      const sx = sp.x + NODE_W / 2,  sy = sp.y + NODE_H;
+      const ex = dp.x + NODE_W / 2,  ey = dp.y;
+      const dy = Math.max(30, (ey - sy) * 0.5);
+      pathEl.setAttribute("d", `M ${sx} ${sy} C ${sx} ${sy + dy} ${ex} ${ey - dy} ${ex} ${ey}`);
+    });
+  }, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -2469,6 +2907,24 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#profiles-save-btn").addEventListener("click", saveProfile);
   $("#profiles-editor").addEventListener("input", () => {
     state.profiles.content = $("#profiles-editor").value;
+    try {
+      const parsed = JSON.parse(state.profiles.content);
+      if ((parsed.orgProfile ?? null) !== state.profiles.orgProfile) {
+        state.profiles.orgProfile = parsed.orgProfile ?? null;
+        syncOrgSelect();
+      }
+    } catch {}
+  });
+
+  $("#profiles-org-select").addEventListener("change", (e) => {
+    state.profiles.orgProfile = e.target.value || null;
+    let profile;
+    try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { return; }
+    if (state.profiles.orgProfile) profile.orgProfile = state.profiles.orgProfile;
+    else delete profile.orgProfile;
+    state.profiles.content = JSON.stringify(profile, null, 2);
+    $("#profiles-editor").value = state.profiles.content;
+    $("#profiles-save-btn").disabled = false;
   });
 
   $("#inspector-close").addEventListener("click", () => {
@@ -2478,6 +2934,77 @@ document.addEventListener("DOMContentLoaded", () => {
       df.node_selected.classList.remove("selected");
       df.node_selected = null;
     }
+  });
+
+  $("#inspector-source-select").addEventListener("change", async (e) => {
+    const nodeName = $("#profiles-inspector").dataset.deptName;
+    if (nodeName !== "previous-run") return;
+
+    const sourceProfile = e.target.value || null;
+    let profile;
+    try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { return; }
+    const node = (profile.nodes ?? []).find(n => n.id === "previous-run");
+    if (node) {
+      if (sourceProfile) node.sourceProfile = sourceProfile;
+      else delete node.sourceProfile;
+    }
+
+    // Cache partial run types for the selected profile
+    if (sourceProfile && !state.profiles.partialRunTypes[sourceProfile]) {
+      try {
+        const res  = await fetch(`/api/profiles/${sourceProfile}`);
+        const data = await res.json();
+        const pj   = JSON.parse(data.content ?? "{}");
+        // Collect carries from edges pointing to partial-run
+        const types = new Set();
+        for (const edge of (pj.edges ?? [])) {
+          if (edge.to === "partial-run" && edge.type === "forward") {
+            (edge.carries ?? []).forEach(t => types.add(t));
+          }
+        }
+        // Fallback: if no partial-run edges, use all outputs reachable in that profile
+        state.profiles.partialRunTypes[sourceProfile] = types.size > 0
+          ? [...types]
+          : (state.profiles.specialNodes["previous-run"]?.outputs ?? []);
+      } catch {
+        state.profiles.partialRunTypes[sourceProfile] = state.profiles.specialNodes["previous-run"]?.outputs ?? [];
+      }
+    }
+
+    // Update node card subline
+    const df = state.profiles.drawflow;
+    if (df) {
+      const exported = df.export();
+      for (const [numId, dfNode] of Object.entries(exported?.drawflow?.Home?.data ?? {})) {
+        if (dfNode.name !== "previous-run") continue;
+        const nodeEl = document.getElementById(`node-${numId}`);
+        const subEl  = nodeEl?.querySelector(".sn-subline");
+        if (subEl) subEl.textContent = sourceProfile ? `source: ${sourceProfile}` : "default — all artifact types";
+        break;
+      }
+    }
+
+    state.profiles.content = JSON.stringify(profile, null, 2);
+    $("#profiles-editor").value = state.profiles.content;
+    $("#profiles-save-btn").disabled = false;
+    runReachabilityCheck();
+  });
+
+  $("#inspector-manager-select").addEventListener("change", (e) => {
+    const deptName = $("#profiles-inspector").dataset.deptName;
+    if (!deptName) return;
+
+    let profile;
+    try { profile = JSON.parse(state.profiles.content ?? "{}"); } catch { return; }
+
+    const node = (profile.nodes ?? []).find(n => n.id === deptName);
+    if (node) {
+      node.manager = e.target.value || null;
+    }
+
+    state.profiles.content = JSON.stringify(profile, null, 2);
+    $("#profiles-editor").value = state.profiles.content;
+    $("#profiles-save-btn").disabled = false;
   });
 
   $("#inspector-budget-check").addEventListener("change", (e) => {
@@ -2558,24 +3085,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#org-hr-field").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitHrResponse(); }
-  });
-
-  $("#staff-new-worker-btn").addEventListener("click", async () => {
-    const btn = $("#staff-new-worker-btn");
-    btn.disabled = true;
-    btn.textContent = "Starting…";
-    try {
-      const res = await fetch("/api/workers/create", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error ?? "Failed to start worker design session.");
-        return;
-      }
-      await checkHrSession();
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "+ New Worker";
-    }
   });
 
   // Collapsible sections

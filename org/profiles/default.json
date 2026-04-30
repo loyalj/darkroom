@@ -4,12 +4,5 @@
   "description": "Single CEO role handling all decisions",
   "nodes": [
     { "roleId": "ceo", "escalatesTo": null }
-  ],
-  "decisionRouting": {
-    "copy-review":             "ceo",
-    "security-finding":        "ceo",
-    "security-final-approval": "ceo",
-    "review-verdict-no-ship":  "ceo",
-    "review-verdict-ship":     "ceo"
-  }
+  ]
 }

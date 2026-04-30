@@ -1,0 +1,16 @@
+{
+  "previous-run": {
+    "color": "#f97316",
+    "label": "Previous Run",
+    "description": "Injects all artifacts from a completed run into this pipeline. Use as the source node for profiles that continue from another pipeline (e.g. Audit continuing from Rapid).",
+    "inputs": [],
+    "outputs": ["design-spec", "review-spec", "runtime-spec", "factory-manifest", "build-artifact"]
+  },
+  "partial-run": {
+    "color": "#06b6d4",
+    "label": "Partial Run",
+    "description": "Marks the outputs this profile publishes for use by other profiles. Connect department outputs into this node to declare what this profile makes available.",
+    "inputs": ["design-spec", "review-spec", "runtime-spec", "factory-manifest", "build-artifact"],
+    "outputs": []
+  }
+}
