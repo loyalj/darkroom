@@ -2,6 +2,7 @@
   "id": "audit",
   "name": "Quality Audit",
   "description": "Review and security audit only — runs against existing build artifacts.",
+  "orgProfile": "default",
   "requiresRun": true,
   "nodes": [
     {

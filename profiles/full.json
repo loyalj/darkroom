@@ -2,6 +2,7 @@
   "id": "full",
   "name": "Full Factory Run",
   "description": "Complete four-department pipeline with feedback loops and budget checkpoints.",
+  "orgProfile": "default",
   "nodes": [
     {
       "id": "design",

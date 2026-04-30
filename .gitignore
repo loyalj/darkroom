@@ -3,14 +3,13 @@ runs/
 accounts/
 memory/
 
-# Org session transcripts
-org/sessions/
+# IDE / local tooling
+.claude/
 
-# Brain files (personal decision profile — do not commit)
-brain.md
-brain-config.json
-brain-transcript.md
-brain-token-usage.jsonl
+# Org session transcripts and personal token logs
+org/sessions/
+org/*/brain-transcript.md
+org/*/brain-token-usage.jsonl
 
 # Dependencies
 node_modules/

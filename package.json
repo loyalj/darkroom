@@ -4,7 +4,9 @@
   "description": "A multi-agent Claude pipeline that takes a software idea from concept to a shippable artifact. Four divisions run in sequence — Design, Build, Review, and Security — each staffed by Claude agents and coordinated by a pipeline orchestrator.",
   "main": "display.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node run-gui.js",
+    "start:hr": "node run-hr.js",
+    "start:cli": "node run-factory.js"
   },
   "keywords": [],
   "author": "",

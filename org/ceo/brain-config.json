@@ -1,0 +1,4 @@
+{
+  "tokenLimitPerRun": null,
+  "maxLoopsBeforeEscalate": 3
+}

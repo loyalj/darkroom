@@ -1,128 +1,188 @@
-# Software Factory
+# Dark Room — Software Factory
 
-A multi-agent Claude pipeline that takes a software idea from concept to a shippable artifact. Four divisions run in sequence — Design, Build, Review, and Security — each staffed by Claude agents and coordinated by a data-driven pipeline orchestrator.
+A multi-agent Claude pipeline that takes a software idea from concept to a shippable artifact. Four divisions run in sequence — Design, Build, Review, and Security — each staffed by Claude agents coordinated by a data-driven pipeline orchestrator.
 
 ---
 
 ## Prerequisites
 
-- Node.js
-- Claude Code CLI installed and authenticated (`claude` must be available in your PATH)
+**Node.js 18+** — [nodejs.org](https://nodejs.org)
 
-After cloning, install dependencies:
+**Claude Code CLI** — the factory calls Claude as a subprocess. Install it globally:
 
+```bash
+npm install -g @anthropic-ai/claude-code
 ```
+
+Then authenticate:
+
+```bash
+claude login
+```
+
+This opens a browser to complete authentication with your Anthropic account. Once done, `claude` is available in your PATH and the factory can use it.
+
+> **Note:** Claude Code usage bills to your Anthropic account. A full pipeline run (Design → Build → Review → Security) typically costs $2–8 depending on project complexity and model choice.
+
+---
+
+## Installation
+
+```bash
+git clone <repo-url>
+cd dark-room
 npm install
 ```
 
 ---
 
-## Quick Start — GUI
+## Quick Start
 
-The web dashboard is the primary way to use the factory. It handles launching runs, monitoring progress in real time, browsing history, managing org brains, and designing workers.
+Start the dashboard:
 
+```bash
+npm start
+# → http://localhost:4242
 ```
-node run-gui.js             # start the dashboard at http://localhost:4242
-node run-gui.js --port 8080 # custom port
+
+Custom port:
+
+```bash
+node run-gui.js --port 8080
 ```
 
-From the dashboard you can:
+**Your first run:**
 
-- **Launch Run** — pick a profile, optional source run, mode, and tag; click Launch
-- **Run Viewer** — streams live progress, token spend, brain decisions, and agent transcripts for any in-progress run
-- **Run Browser** — browse and inspect all completed runs
-- **Factory Profiles** — view, edit, and author pipeline profiles; assign workers to slots
-- **Factory Staff** — manage org role brains and design custom worker agents
-- **Factory Memory** — read accumulated craft knowledge (wikis) and run history per department
+1. Open the dashboard and go to **Launch Run**
+2. Select the **Rapid Prototype** profile (Design + Build only — fastest way to test)
+3. Set mode to **Manual** so you can participate in the interviews
+4. Click **Launch Run**
+5. Switch to **Run Viewer** — the Design division will start and ask you to describe what you want to build
+
+The factory ships a default org brain (`org/ceo/brain.md`) with sensible generic settings so you can run immediately. After your first run, replace it by running the HR interview — see [Org Setup](#org-setup) below.
 
 ---
 
-## Org Setup
+## Pipeline Profiles
 
-Before running in auto mode, set up your org brain. The factory uses it to make autonomous decisions on your behalf.
+A profile defines which divisions run and how they connect. Select one from the Launch view or pass `--profile` on the CLI.
 
-From the GUI, go to **Factory Staff** and click **New Role** to begin a guided interview for any role that's missing a brain. The CEO role governs all factory-wide decisions by default.
+| Profile | Pipeline | Use when |
+|---------|----------|----------|
+| `rapid` | Design → Build | Fast iteration — design and build only |
+| `lean` | Design → Build → Review | Adds quality review, skips security |
+| `full` | Design → Build → Review → Security | Production quality — full pipeline |
+| `audit` | Review → Security | Audit an existing artifact from a previous run |
 
-Or from the CLI:
-
-```
-node departments/hr/run.js --role ceo          # interview the CEO role
-node departments/hr/run.js --create-role       # design a new role, then interview it
-node departments/hr/run.js --create-worker     # design a custom worker agent
-```
-
-The brain interview takes 10–20 minutes and captures your management style, quality bar, copy voice, security posture, and escalation preferences. Re-run it at any time to update — the existing brain is replaced.
+Profiles live in `profiles/` as JSON and are fully editable from the **Factory Profiles** view.
 
 ---
 
-## Running the Factory — CLI
-
-If you prefer the terminal, the orchestrator runs the full pipeline directly.
-
-```
-node run-factory.js                           # new run, full pipeline (manual mode)
-node run-factory.js --mode auto               # fully autonomous
-node run-factory.js --run-id <id>             # resume an existing run
-node run-factory.js --profile lean            # use a specific profile
-node run-factory.js --tag <label>             # attach a label to the run
-node run-factory.js --stop-after design       # stop after a specific division
-node run-factory.js --stop-after build
-node run-factory.js --stop-after review
-node run-factory.js --caveman                 # compressed agent context (lower token spend)
-```
-
-**Caveman mode** reduces token spend by compressing context passed between agents. Useful for tight budgets. Also available as `FACTORY_CAVEMAN=1 node run-factory.js`.
-
-**Manual vs. auto mode:**
+## Manual vs. Auto Mode
 
 | Mode | What you do |
 |------|-------------|
 | `manual` (default) | Participate in each division's decision points — architect interview, copy approval, verdict review, security sign-off |
 | `auto` | The factory handles all decision points using your org brain. Escalates when confidence is low or loop limits are reached. |
 
----
-
-## Pipeline Profiles
-
-A profile defines which divisions run and how they connect. Select a profile from the Launch view or pass `--profile` on the CLI.
-
-| Profile | Pipeline | Use when |
-|---------|----------|----------|
-| `full` (default) | Design → Build → Review → Security | Production quality — full pipeline |
-| `lean` | Design → Build → Review | Skips security — faster iteration |
-| `rapid` | Design → Build | Design and implement only |
-| `audit` | Review → Security | Audit an existing artifact from a previous run |
-
-Profiles live in `profiles/` as JSON and are fully editable from the Factory Profiles view.
+Auto mode requires a configured org brain. The default brain is included but generic — run the HR interview to personalize it before relying on auto mode for real projects.
 
 ---
 
-## Auto Mode and the Org Brain
+## Org Setup
 
-When running with `--mode auto`, the factory makes decision-point calls autonomously using two context files:
+The org brain (`org/ceo/brain.md`) tells the factory how to make autonomous decisions on your behalf. The repo ships with a reasonable default. To replace it with one tuned to your preferences:
 
-**`org/ceo/brain.md`** — your global decision-making profile. Set up via HR before running auto mode. Captures your management style, quality bar, copy voice, security posture, and escalation preferences.
+```bash
+npm run start:hr
+# → opens the HR interface in the GUI
+```
 
-**`runs/{id}/run-brain.md`** — per-run calibration. Created after Design completes, before Build starts. Grounds the orchestrator in the specific project's intent, priority, constraints, and token budget.
+Or from the GUI, go to **Factory Staff** and click **Run Interview** on the CEO role.
 
-**Decision points handled in auto mode:**
+The interview takes 15–20 minutes and covers: management style, quality bar, copy voice, security posture, and escalation preferences. Re-run it at any time to update.
 
-| Division | Decision point |
-|----------|---------------|
-| Build | Copy review approval |
-| Security | Dynamic test plan |
-| Security | High finding (conditional pass) |
-| Security | Final sign-off |
-| Review | No-ship verdict |
-| Review | Ship verdict |
+---
 
-**When auto mode escalates to you:**
+## CLI Usage
 
-- Confidence is low on a decision
-- A loop limit is reached without resolution
-- Budget limit exceeded
+```bash
+node run-factory.js                           # new run, full pipeline (manual mode)
+node run-factory.js --mode auto               # fully autonomous
+node run-factory.js --profile rapid           # use a specific profile
+node run-factory.js --run-id <id>             # resume an existing run
+node run-factory.js --tag <label>             # attach a label to the run
+node run-factory.js --stop-after design       # stop after a specific division
+node run-factory.js --caveman                 # compressed context (lower token spend)
+```
 
-Escalation pauses the factory with a report of what happened and the available options.
+**Caveman mode** reduces token spend by compressing context passed between agents. Roughly 30–50% cheaper. Also available as `FACTORY_CAVEMAN=1 node run-factory.js`.
+
+---
+
+## Division Reference
+
+### Design
+
+Conducts a structured interview and produces the specs that drive everything downstream.
+
+| Phase | What happens |
+|-------|-------------|
+| Functional Interview | Agent asks what your software does — mechanics, rules, data, edge cases |
+| Experience Interview | Agent asks about user journeys and what the experience should feel like |
+| Consistency Check | Agent privately reviews both transcripts for gaps and conflicts |
+| Clarification Round | If issues found, agent asks targeted follow-up questions |
+| Spec Generation | Agent writes four locked artifacts to `runs/{id}/handoff/` |
+
+Output: `build-spec.md`, `review-spec.md`, `runtime-spec.md`, `factory-manifest.json`
+
+---
+
+### Build
+
+Receives the Build Spec and produces a verified, packaged artifact.
+
+| Phase | What happens |
+|-------|-------------|
+| Architect Interview | Agent presents its technical plan; you discuss and type `lock` to proceed |
+| Implementation | Agents write code to `runs/{id}/build/src/` |
+| Integration | Agent assembles modules and resolves interface issues |
+| Copy Review | Agent audits all user-facing strings; decision point |
+| Verification | Agent runs acceptance criteria; failures route to Fix |
+| Packaging | Agent copies runtime files to `runs/{id}/artifact/` |
+
+Decision points: architect lock (`lock`), copy approval (`yes` or feedback), verification failures (describe the fix).
+
+---
+
+### Review
+
+Independently verifies the artifact against the Review Spec. Evaluates the experience, not the source code.
+
+| Phase | What happens |
+|-------|-------------|
+| Scenario Analysis | Builds a coverage map from the Review Spec |
+| Explorer Agents | One agent per scenario interacts with the artifact |
+| Edge Case Exploration | Agent probes implied scenarios the spec doesn't state |
+| Verdict | Issues SHIP or NO-SHIP |
+| Human Approval | Decision point |
+
+Decision point: `yes` to approve a SHIP verdict, or `override` + reason for a NO-SHIP you want to pass anyway.
+
+---
+
+### Security
+
+Performs static and dynamic security testing on the artifact.
+
+| Phase | What happens |
+|-------|-------------|
+| Static Analysis | Reviews source code for vulnerabilities |
+| Dynamic Testing | Proposes and executes a test plan |
+| Verdict | Consolidates findings — PASS, CONDITIONAL PASS, or BLOCK |
+| Human Checkpoint | Decision point |
+
+Decision point: `yes` to pass, or for high findings: `accept` (ship with known risk) or `fix` (route back to Build).
 
 ---
 
@@ -130,119 +190,45 @@ Escalation pauses the factory with a report of what happened and the available o
 
 Each division has named **slots** — the roles agents fill during a run (e.g. `build.architect`, `design.spec-writer`). By default, every slot is filled by the built-in default worker. Custom workers let you swap in a different agent persona for any slot.
 
-**Designing a worker:** Go to **Factory Staff → + New Worker** in the GUI. The Worker Designer interviews you about the persona — expertise, style, constraints — and writes a system prompt. The worker is saved and immediately available for assignment.
+**Designing a worker:** Go to **Factory Staff → + New Worker** in the GUI. The Worker Designer interviews you about the persona and writes a system prompt. The worker is saved and immediately available for assignment.
 
-**Assigning workers to a profile:** Go to **Factory Profiles**, select a profile, and click the **Workers** tab. Each slot shows its current worker with a dropdown to reassign. Save the profile to persist the assignment.
-
-**How it works at runtime:** The factory writes `worker-assignments.json` into the run directory before spawning each division. Each runner resolves slot prompts from that file, falling back to schema defaults for any unassigned slots.
+**Assigning workers:** Go to **Factory Profiles**, select a profile, and click the **Workers** tab. Each slot shows a dropdown to reassign. Save the profile to persist.
 
 ---
 
-## Division by Division
+## Auto Mode and the Org Brain
 
-### Design Division
+When running with `--mode auto`, the factory makes decision-point calls autonomously using two context files:
 
-Conducts a structured interview to produce the specs that drive everything downstream.
+**`org/ceo/brain.md`** — your global decision-making profile. Set up via HR before relying on auto mode for real projects.
 
-| # | Phase | What happens |
-|---|-------|-------------|
-| 1 | Functional Interview | Agent asks what your software does — mechanics, rules, data, edge cases |
-| 2 | Experience Interview | Agent asks about user journeys and what the experience should feel like |
-| 3 | Consistency Check | Agent privately reviews both transcripts for gaps and conflicts |
-| 4 | Clarification Round | If issues found, agent asks targeted follow-up questions |
-| 5 | Spec Generation | Agent writes four locked artifacts to `runs/{id}/handoff/` |
+**`runs/{id}/run-brain.md`** — per-run calibration. Created after Design completes. Grounds the orchestrator in the specific project's intent, priority, constraints, and token budget.
 
-**Output artifacts written to `runs/{id}/handoff/`:**
-- `build-spec.md` — functional requirements and acceptance criteria
-- `review-spec.md` — scenario descriptions and expected user experiences
-- `runtime-spec.md` — how to run the finished artifact
-- `factory-manifest.json` — project metadata
-
----
-
-### Build Division
-
-Receives the Build Spec and produces a verified, packaged artifact.
-
-| # | Phase | What happens |
-|---|-------|-------------|
-| 1 | Architect Interview | Agent presents its technical plan and asks any open questions |
-| 2 | Implementation | Agents write code to `runs/{id}/build/src/` |
-| 3 | Integration | Agent assembles modules and resolves interface issues |
-| 4 | Copy Review | Agent audits all user-facing strings; decision point |
-| 5 | Verification | Agent runs the build against acceptance criteria; failures route to Fix |
-| 6 | Packaging | Agent copies runtime files to `runs/{id}/artifact/` |
-
-**Decision points:**
-- **Phase 1 — Architect Interview:** Discuss the plan. Type `lock` to end the interview and begin implementation.
-- **Phase 4 — Copy Review:** Type `yes` to approve, or type feedback to request revisions.
-- **Phase 5 — Verification failures:** Describe what needs fixing. The Fix agent applies changes and re-verifies.
-
-**Fix mode:** If Review or Security sends failure reports back, re-running build automatically enters Fix Mode — reads the failure reports, applies fixes, and re-verifies.
-
----
-
-### Review Division
-
-Independently verifies the artifact against the Review Spec. Evaluates the experience, not the source code.
-
-| # | Phase | What happens |
-|---|-------|-------------|
-| 1 | Runtime Standup | Confirms the artifact is runnable |
-| 2 | Scenario Analysis | Agent reads Review Spec and builds a coverage map |
-| 3 | Explorer Agents | One agent per scenario interacts with the artifact |
-| 4 | Edge Case Exploration | Agent explores implied scenarios the spec doesn't state |
-| 5 | Verdict | Agent issues a SHIP or NO-SHIP recommendation |
-| 6 | Human Approval | Decision point |
-
-**Decision point — Phase 6:**
-- **SHIP verdict:** `yes` to approve, `no` + reason to reject and route back to build
-- **NO-SHIP verdict:** Enter to accept (failure reports written), or `override` to ship anyway — a reason is required and logged
-
----
-
-### Security Division
-
-Performs static and dynamic security testing on the artifact.
-
-| # | Phase | What happens |
-|---|-------|-------------|
-| 1 | Static Analysis | Agent reviews source code for vulnerabilities |
-| 2 | Dynamic Testing | Agent proposes a test plan; decision point; agent executes approved tests |
-| 3 | Verdict | Agent consolidates findings into a security verdict |
-| 4 | Human Checkpoint | Decision point |
-
-**Decision points:**
-- **Phase 2 — Test Plan:** `yes` to run all, `skip <id>` to remove a specific test, `no` to cancel
-- **Phase 4 — Checkpoint:**
-  - `PASS` — `yes` to proceed or `no` + reason to reject
-  - `CONDITIONAL PASS` — review each high finding: `accept` or `fix`
-  - `BLOCK` — remediation requests written automatically and routed to build
+**When auto mode escalates to you:**
+- Confidence is low on a decision
+- A loop limit is reached without resolution
+- Budget limit exceeded
 
 ---
 
 ## Inspecting Runs
 
-The Run Browser in the GUI covers most inspection needs. For terminal use:
+The **Run Browser** in the GUI covers most inspection needs. For terminal use:
 
-```
+```bash
 node inspect.js <run-id>              # detailed view
 node inspect.js <run-id> --detail     # adds per-agent token and time breakdown
 node inspect.js <id1> <id2>           # compare two runs side by side
 node inspect.js --trend               # all runs in chronological order
-node inspect.js --trend 10 --detail   # last 10 runs with per-phase stats
+node inspect.js --trend 10 --detail   # last 10 runs with detail
 node inspect.js                       # list all runs
 ```
-
-The detailed view shows division status, token usage by phase, time per phase, orchestrator decisions, and any pending failure reports or remediations.
 
 ---
 
 ## Token Budget
 
-Set a spend limit during the brain or run brain interview. The factory checks spend after each division and pauses if the limit is exceeded — you can continue or abort.
-
-Historical token spend per run is recorded in `accounts/ledger.jsonl`.
+Set a spend limit during the HR interview. The factory checks spend after each division and pauses if the limit is exceeded — you can continue or abort.
 
 ---
 
@@ -250,88 +236,67 @@ Historical token spend per run is recorded in `accounts/ledger.jsonl`.
 
 ```
 runs/{run-id}/
-  handoff/                    Locked specs (Design → Build/Review/Security)
+  handoff/                    Locked specs from Design
     build-spec.md
     review-spec.md
     runtime-spec.md
     factory-manifest.json
-  worker-assignments.json     Resolved worker slot assignments for this run
   build/
     src/                      Generated source code
     architecture-plan.md
-    task-graph.json
     verification-report.json
-    integration-report.md
   artifact/                   Packaged artifact (input to Review and Security)
     MANIFEST.txt
   review/
-    coverage-map.json
-    scenario-reports/
-    edge-case-summary.md
     verdict-report.md
+    edge-case-summary.md
   security/
     static-analysis-report.md
-    proposed-test-plan.json
-    approved-test-plan.json
     dynamic-test-report.md
     security-verdict-report.md
-  failure-reports/            Written by Review on NO-SHIP → consumed by Build fix mode
-  security-remediations/      Written by Security on BLOCK → consumed by Build fix mode
-  run-brain.md                Per-run calibration (created post-Design)
-  run-config.json             Structured limits extracted from run brain
-  run-meta.json               Tag and start timestamp (written if --tag is passed)
+  run-brain.md                Per-run calibration
   decision-log.jsonl          Every auto decision made by the orchestrator
   log.jsonl                   Append-only event log
   token-usage.jsonl           Raw token usage per agent call
-  time-usage.jsonl            Elapsed time per agent call
 
 org/
-  chart.json                  Org chart — role definitions and decision point ownership
-  ceo/                        CEO role (global brain — governs all factory decisions)
-    brain.md
-    brain-transcript.md
-  {role}/                     One directory per org role
+  roles/                      Role definitions
+  profiles/                   Org chart profiles (escalation chains)
+  {role}/
+    brain.md                  Decision-making profile for this role
+    brain-config.json         Structured config values (token limits, loop tolerance)
 
 workers/
-  {id}/                       One directory per worker
-    worker.json               Worker metadata (id, name, slotType, department)
-    prompt.md                 Custom system prompt (absent for built-in default workers)
-
-memory/
-  design/  build/  review/  security/
-    wiki.md                   Accumulated craft knowledge (injected into agent prompts)
-    runs.jsonl                Structured run records
+  {id}/
+    worker.json               Worker metadata
+    prompt.md                 Custom system prompt
 
 profiles/
   full.json    lean.json    rapid.json    audit.json
+
+memory/                       Accumulated craft knowledge — excluded from git
+  design/  build/  review/  security/
+    wiki.md                   Injected into agent prompts
+    runs.jsonl                Structured run records
 ```
 
 ---
 
 ## Agent Prompts
 
-Each division's agent prompts live co-located with the runner, in `departments/{dept}/`. Edit them directly to change how any agent thinks. Shared infrastructure prompts are in `agents/shared/` and `agents/leadership/`.
+Each division's prompts live co-located with the runner in `departments/{dept}/`. Edit them directly to change how any agent thinks. Shared prompts are in `agents/shared/` and `agents/leadership/`.
 
 ```
 departments/
-  build/
-    architect.md      implementation.md   integration.md
-    copywriter.md     verification.md     fix.md   packager.md
-  design/
-    interviewer.md    experience-interviewer.md
-    consistency-checker.md    spec-writer.md
-  review/
-    scenario-analyst.md   explorer.md   edge-case-runner.md   verdict.md
-  security/
-    static-analyst.md   dynamic-tester.md   verdict.md
-  hr/
-    brain-interviewer.md   role-designer.md   worker-designer.md
+  build/      architect.md  implementation.md  integration.md
+              copywriter.md  verification.md  fix.md  packager.md
+  design/     interviewer.md  experience-interviewer.md
+              consistency-checker.md  spec-writer.md
+  review/     scenario-analyst.md  explorer.md  edge-case-runner.md  verdict.md
+  security/   static-analyst.md  dynamic-tester.md  verdict.md
+  hr/         brain-interviewer.md  role-designer.md  worker-designer.md
 
 agents/
-  shared/
-    conventions.md          Prefixed to every agent's system prompt
-    output-formats.md       Structured output schemas
-  leadership/
-    run-brain-interviewer.md
-    architect-reviewer.md
+  shared/     conventions.md  output-formats.md
+  leadership/ run-brain-interviewer.md  architect-reviewer.md
 ```
