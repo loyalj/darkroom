@@ -1,6 +1,16 @@
 # Darkroom
 
-A multi-agent Claude pipeline that develops software ideas into shippable artifacts. Four divisions run in sequence — Design, Build, Review, and Security — each staffed by Claude agents coordinated by a data-driven pipeline orchestrator.
+Describe an app idea. Get working, reviewed, and security-audited code.
+
+Darkroom is a multi-agent Claude pipeline that takes a plain-English idea and runs it through four divisions — Design, Build, Review, and Security — each staffed by Claude agents that interview you, write specs, generate code, test it, and hand off to the next stage.
+
+---
+
+## What it does
+
+You type what you want to build. Darkroom's Design division interviews you to nail down the details, writes a locked spec, and hands it to Build. Build plans the architecture with you, writes the code, and packages it. Review stress-tests it against your spec. Security scans it for vulnerabilities.
+
+The whole thing runs in a terminal + browser dashboard. You participate at the decision points that matter (or let it run fully autonomous).
 
 ---
 
@@ -8,21 +18,16 @@ A multi-agent Claude pipeline that develops software ideas into shippable artifa
 
 **Node.js 18+** — [nodejs.org](https://nodejs.org)
 
-**Claude Code CLI** — the factory calls Claude as a subprocess. Install it globally:
+**Claude Code CLI:**
 
 ```bash
 npm install -g @anthropic-ai/claude-code
-```
-
-Then authenticate:
-
-```bash
 claude login
 ```
 
-This opens a browser to complete authentication with your Anthropic account. Once done, `claude` is available in your PATH and the factory can use it.
+`claude login` opens a browser to authenticate with your Anthropic account. Once done, `claude` is in your PATH and Darkroom can use it.
 
-> **Note:** Claude Code usage bills to your Anthropic account. A full pipeline run (Design → Build → Review → Security) typically costs $2–8 depending on project complexity and model choice.
+> A full pipeline run (Design → Build → Review → Security) typically costs $2–8 — about the price of a coffee, depending on project complexity.
 
 ---
 
@@ -36,7 +41,7 @@ npm install
 
 ---
 
-## Quick Start
+## Your first run
 
 Start the dashboard:
 
@@ -45,82 +50,81 @@ npm start
 # → http://localhost:4242
 ```
 
-Custom port:
+Then:
 
-```bash
-node run-gui.js --port 8080
-```
-
-**Your first run:**
-
-1. Open the dashboard and go to **Launch Run**
-2. Select the **Rapid Prototype** profile (Design + Build only — fastest way to test)
-3. Set mode to **Manual** so you can participate in the interviews
+1. Go to **Launch Run**
+2. Select **Rapid Prototype** (Design + Build — fastest way to start)
+3. Leave mode on **Manual** so you can participate
 4. Click **Launch Run**
-5. Switch to **Run Viewer** — the Design division will start and ask you to describe what you want to build
+5. Switch to **Run Viewer**
 
-The factory ships a default org brain (`org/ceo/brain.md`) with sensible generic settings so you can run immediately. After your first run, replace it by running the HR interview — see [Org Setup](#org-setup) below.
+The Design agent will ask what you want to build. Not sure what to try? Here's a good starter prompt:
+
+> *"A web-based Pomodoro timer. 25-minute work sessions, 5-minute breaks, tracks completed sessions, plays a soft chime when time's up. Simple and clean."*
+
+The agent will ask follow-up questions, write a spec, then hand off to Build. Build will present an architecture plan — type `lock` when you're happy with it. From there it codes, reviews the copy, and packages the result.
+
+**What you'll get:** a working artifact in `runs/{id}/artifact/`, with specs, source code, and a verification report.
 
 ---
 
-## Pipeline Profiles
+## Pipeline profiles
 
-A profile defines which divisions run and how they connect. Select one from the Launch view or pass `--profile` on the CLI.
+A profile defines which divisions run and in what order. Select one from the Launch view or pass `--profile` on the CLI.
 
 | Profile | Pipeline | Use when |
 |---------|----------|----------|
 | `rapid` | Design → Build | Fast iteration — design and build only |
 | `lean` | Design → Build → Review | Adds quality review, skips security |
-| `full` | Design → Build → Review → Security | Production quality — full pipeline |
-| `audit` | Review → Security | Audit an existing artifact from a previous run |
+| `full` | Design → Build → Review → Security | Full pipeline — production quality |
+| `audit` | Review → Security | Audit an artifact from a previous run |
 
 Profiles live in `profiles/` as JSON and are fully editable from the **Factory Profiles** view.
 
 ---
 
-## Manual vs. Auto Mode
+## Manual vs. Auto mode
 
-| Mode | What you do |
+| Mode | What happens |
 |------|-------------|
-| `manual` (default) | Participate in each division's decision points — architect interview, copy approval, verdict review, security sign-off |
-| `auto` | The factory handles all decision points using your org brain. Escalates when confidence is low or loop limits are reached. |
+| `manual` (default) | You participate at each decision point — architect interview, copy approval, verdict review, security sign-off |
+| `auto` | Darkroom handles all decisions using your org brain. Escalates when confidence is low or a loop limit is reached. |
 
-Auto mode requires a configured org brain. The default brain is included but generic — run the HR interview to personalize it before relying on auto mode for real projects.
+Auto mode works out of the box with the default org brain. For real projects, run the HR interview first to tune it to your preferences.
 
 ---
 
-## Org Setup
+## Org setup
 
-The org brain (`org/ceo/brain.md`) tells the factory how to make autonomous decisions on your behalf. The repo ships with a reasonable default. To replace it with one tuned to your preferences:
+The org brain (`org/ceo/brain.md`) tells Darkroom how to make autonomous decisions on your behalf. The repo ships with a sensible default. To replace it with one tuned to you:
 
 ```bash
 npm run start:hr
-# → opens the HR interface in the GUI
 ```
 
 Or from the GUI, go to **Factory Staff** and click **Run Interview** on the CEO role.
 
-The interview takes 15–20 minutes and covers: management style, quality bar, copy voice, security posture, and escalation preferences. Re-run it at any time to update.
+The interview takes 15–20 minutes and covers your management style, quality bar, copy voice, security posture, and escalation preferences.
 
 ---
 
-## CLI Usage
+## CLI
 
 ```bash
-node run-factory.js                           # new run, full pipeline (manual mode)
+node run-factory.js                           # new run, full pipeline
 node run-factory.js --mode auto               # fully autonomous
-node run-factory.js --profile rapid           # use a specific profile
+node run-factory.js --profile rapid           # specific profile
 node run-factory.js --run-id <id>             # resume an existing run
-node run-factory.js --tag <label>             # attach a label to the run
+node run-factory.js --tag <label>             # label a run
 node run-factory.js --stop-after design       # stop after a specific division
-node run-factory.js --caveman                 # compressed context (lower token spend)
+node run-factory.js --caveman                 # compressed context (~30–50% cheaper)
 ```
 
-**Caveman mode** reduces token spend by compressing context passed between agents. Roughly 30–50% cheaper. Also available as `FACTORY_CAVEMAN=1 node run-factory.js`.
+**Caveman mode** compresses context passed between agents. Roughly 30–50% cheaper with minimal quality loss. Also available as `FACTORY_CAVEMAN=1 node run-factory.js`.
 
 ---
 
-## Division Reference
+## Division reference
 
 ### Design
 
@@ -144,10 +148,10 @@ Receives the Build Spec and produces a verified, packaged artifact.
 
 | Phase | What happens |
 |-------|-------------|
-| Architect Interview | Agent presents its technical plan; you discuss and type `lock` to proceed |
+| Architect Interview | Agent presents its technical plan — discuss and type `lock` to proceed |
 | Implementation | Agents write code to `runs/{id}/build/src/` |
 | Integration | Agent assembles modules and resolves interface issues |
-| Copy Review | Agent audits all user-facing strings; decision point |
+| Copy Review | Agent audits all user-facing strings — decision point |
 | Verification | Agent runs acceptance criteria; failures route to Fix |
 | Packaging | Agent copies runtime files to `runs/{id}/artifact/` |
 
@@ -188,7 +192,7 @@ Decision point: `yes` to pass, or for high findings: `accept` (ship with known r
 
 ## Workers
 
-Each division has named **slots** — the roles agents fill during a run (e.g. `build.architect`, `design.spec-writer`). By default, every slot is filled by the built-in default worker. Custom workers let you swap in a different agent persona for any slot.
+Each division has named **slots** — the roles agents fill during a run (e.g. `build.architect`, `design.spec-writer`). By default every slot is filled by the built-in default worker. Custom workers let you swap in a different agent persona for any slot.
 
 **Designing a worker:** Go to **Factory Staff → + New Worker** in the GUI. The Worker Designer interviews you about the persona and writes a system prompt. The worker is saved and immediately available for assignment.
 
@@ -196,11 +200,11 @@ Each division has named **slots** — the roles agents fill during a run (e.g. `
 
 ---
 
-## Auto Mode and the Org Brain
+## Auto mode and the org brain
 
-When running with `--mode auto`, the factory makes decision-point calls autonomously using two context files:
+When running with `--mode auto`, Darkroom makes decision-point calls autonomously using two context files:
 
-**`org/ceo/brain.md`** — your global decision-making profile. Set up via HR before relying on auto mode for real projects.
+**`org/ceo/brain.md`** — your global decision-making profile. Set up via the HR interview before relying on auto mode for real projects.
 
 **`runs/{id}/run-brain.md`** — per-run calibration. Created after Design completes. Grounds the orchestrator in the specific project's intent, priority, constraints, and token budget.
 
@@ -211,7 +215,7 @@ When running with `--mode auto`, the factory makes decision-point calls autonomo
 
 ---
 
-## Inspecting Runs
+## Inspecting runs
 
 The **Run Browser** in the GUI covers most inspection needs. For terminal use:
 
@@ -226,13 +230,13 @@ node inspect.js                       # list all runs
 
 ---
 
-## Token Budget
+## Token budget
 
-Set a spend limit during the HR interview. The factory checks spend after each division and pauses if the limit is exceeded — you can continue or abort.
+Set a spend limit during the HR interview. Darkroom checks spend after each division and pauses if the limit is exceeded — you can continue or abort.
 
 ---
 
-## Run Directory Layout
+## Run directory layout
 
 ```
 runs/{run-id}/
@@ -282,7 +286,7 @@ memory/                       Accumulated craft knowledge — excluded from git
 
 ---
 
-## Agent Prompts
+## Agent prompts
 
 Each division's prompts live co-located with the runner in `departments/{dept}/`. Edit them directly to change how any agent thinks. Shared prompts are in `agents/shared/` and `agents/leadership/`.
 
