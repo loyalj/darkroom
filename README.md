@@ -12,7 +12,7 @@ Darkroom is a multi-agent Claude pipeline that takes a plain-English idea and ru
 
 You type what you want to build — a CLI tool, a script, a terminal app. Darkroom's Design division interviews you to nail down the details, writes a locked spec, and hands it to Build. Build plans the architecture with you, writes the code, and packages it. Review stress-tests it against your spec. Security scans it for vulnerabilities.
 
-The whole thing runs in a terminal + browser dashboard. You participate at the decision points that matter (or let it run fully autonomous).
+The whole thing runs from a browser dashboard. You participate at the decision points that matter (or let it run fully autonomous).
 
 ---
 
@@ -64,7 +64,7 @@ The Design agent will ask what you want to build. Not sure what to try? Here's a
 
 > *"A CLI habit tracker. Log a habit from the terminal, see a streak count, and get a summary of the past 30 days. Store data in a local JSON file. Simple and fast."*
 
-The agent will ask follow-up questions, write a spec, then hand off to Build. Build will present an architecture plan — type `lock` when you're happy with it. From there it codes, reviews the copy, and packages the result.
+Darkroom will interview itself, write a spec, plan the architecture, write the code, review the copy, and package the result — no input needed from you.
 
 **What you'll get:** a working artifact in `runs/{id}/artifact/`, with specs, source code, and a verification report.
 
@@ -72,7 +72,7 @@ The agent will ask follow-up questions, write a spec, then hand off to Build. Bu
 
 ## Pipeline profiles
 
-A profile defines which divisions run and in what order. Select one from the Launch view or pass `--profile` on the CLI.
+A profile defines which divisions run and in what order. Select one from the **Launch Run** view.
 
 | Profile | Pipeline | Use when |
 |---------|----------|----------|
@@ -81,7 +81,7 @@ A profile defines which divisions run and in what order. Select one from the Lau
 | `full` | Design → Build → Review → Security | Full pipeline — production quality |
 | `audit` | Review → Security | Audit an artifact from a previous run |
 
-Profiles live in `profiles/` as JSON and are fully editable from the **Factory Profiles** view.
+Profiles are fully editable from the **Factory Profiles** view.
 
 ---
 
@@ -89,8 +89,8 @@ Profiles live in `profiles/` as JSON and are fully editable from the **Factory P
 
 | Mode | What happens |
 |------|-------------|
-| `manual` (default) | You participate at each decision point — architect interview, copy approval, verdict review, security sign-off |
-| `auto` | Darkroom handles all decisions using your org brain. Escalates when confidence is low or a loop limit is reached. |
+| **Auto** | Darkroom handles all decisions using your org brain. Escalates when confidence is low or a loop limit is reached. |
+| **Manual** | You participate at each decision point — architect interview, copy approval, verdict review, security sign-off |
 
 Auto mode works out of the box with the default org brain. For real projects, run the HR interview first to tune it to your preferences.
 
@@ -98,31 +98,9 @@ Auto mode works out of the box with the default org brain. For real projects, ru
 
 ## Org setup
 
-The org brain (`org/ceo/brain.md`) tells Darkroom how to make autonomous decisions on your behalf. The repo ships with a sensible default. To replace it with one tuned to you:
-
-```bash
-npm run start:hr
-```
-
-Or from the GUI, go to **Factory Staff** and click **Run Interview** on the CEO role.
+The org brain tells Darkroom how to make autonomous decisions on your behalf. The repo ships with a sensible default. To replace it with one tuned to you, go to **Factory Staff** and click **Run Interview** on the CEO role.
 
 The interview takes 15–20 minutes and covers your management style, quality bar, copy voice, security posture, and escalation preferences.
-
----
-
-## CLI
-
-```bash
-node run-factory.js                           # new run, full pipeline
-node run-factory.js --mode auto               # fully autonomous
-node run-factory.js --profile rapid           # specific profile
-node run-factory.js --run-id <id>             # resume an existing run
-node run-factory.js --tag <label>             # label a run
-node run-factory.js --stop-after design       # stop after a specific division
-node run-factory.js --caveman                 # compressed context (~30–50% cheaper)
-```
-
-**Caveman mode** compresses context passed between agents. Roughly 30–50% cheaper with minimal quality loss. Also available as `FACTORY_CAVEMAN=1 node run-factory.js`.
 
 ---
 
@@ -150,14 +128,12 @@ Receives the Build Spec and produces a verified, packaged artifact.
 
 | Phase | What happens |
 |-------|-------------|
-| Architect Interview | Agent presents its technical plan — discuss and type `lock` to proceed |
+| Architect Interview | Agent presents its technical plan and locks the approach |
 | Implementation | Agents write code to `runs/{id}/build/src/` |
 | Integration | Agent assembles modules and resolves interface issues |
-| Copy Review | Agent audits all user-facing strings — decision point |
+| Copy Review | Agent audits all user-facing strings |
 | Verification | Agent runs acceptance criteria; failures route to Fix |
 | Packaging | Agent copies runtime files to `runs/{id}/artifact/` |
-
-Decision points: architect lock (`lock`), copy approval (`yes` or feedback), verification failures (describe the fix).
 
 ---
 
@@ -171,9 +147,6 @@ Independently verifies the artifact against the Review Spec. Evaluates the exper
 | Explorer Agents | One agent per scenario interacts with the artifact |
 | Edge Case Exploration | Agent probes implied scenarios the spec doesn't state |
 | Verdict | Issues SHIP or NO-SHIP |
-| Human Approval | Decision point |
-
-Decision point: `yes` to approve a SHIP verdict, or `override` + reason for a NO-SHIP you want to pass anyway.
 
 ---
 
@@ -186,9 +159,6 @@ Performs static and dynamic security testing on the artifact.
 | Static Analysis | Reviews source code for vulnerabilities |
 | Dynamic Testing | Proposes and executes a test plan |
 | Verdict | Consolidates findings — PASS, CONDITIONAL PASS, or BLOCK |
-| Human Checkpoint | Decision point |
-
-Decision point: `yes` to pass, or for high findings: `accept` (ship with known risk) or `fix` (route back to Build).
 
 ---
 
@@ -196,7 +166,7 @@ Decision point: `yes` to pass, or for high findings: `accept` (ship with known r
 
 Each division has named **slots** — the roles agents fill during a run (e.g. `build.architect`, `design.spec-writer`). By default every slot is filled by the built-in default worker. Custom workers let you swap in a different agent persona for any slot.
 
-**Designing a worker:** Go to **Factory Staff → + New Worker** in the GUI. The Worker Designer interviews you about the persona and writes a system prompt. The worker is saved and immediately available for assignment.
+**Designing a worker:** Go to **Factory Staff → + New Worker**. The Worker Designer interviews you about the persona and writes a system prompt. The worker is saved and immediately available for assignment.
 
 **Assigning workers:** Go to **Factory Profiles**, select a profile, and click the **Workers** tab. Each slot shows a dropdown to reassign. Save the profile to persist.
 
@@ -204,9 +174,9 @@ Each division has named **slots** — the roles agents fill during a run (e.g. `
 
 ## Auto mode and the org brain
 
-When running with `--mode auto`, Darkroom makes decision-point calls autonomously using two context files:
+In Auto mode, Darkroom makes decision-point calls autonomously using two context files:
 
-**`org/ceo/brain.md`** — your global decision-making profile. Set up via the HR interview before relying on auto mode for real projects.
+**`org/ceo/brain.md`** — your global decision-making profile. Set up via the HR interview in **Factory Staff** before relying on auto mode for real projects.
 
 **`runs/{id}/run-brain.md`** — per-run calibration. Created after Design completes. Grounds the orchestrator in the specific project's intent, priority, constraints, and token budget.
 
@@ -219,22 +189,13 @@ When running with `--mode auto`, Darkroom makes decision-point calls autonomousl
 
 ## Inspecting runs
 
-The **Run Browser** in the GUI covers most inspection needs. For terminal use:
-
-```bash
-node inspect.js <run-id>              # detailed view
-node inspect.js <run-id> --detail     # adds per-agent token and time breakdown
-node inspect.js <id1> <id2>           # compare two runs side by side
-node inspect.js --trend               # all runs in chronological order
-node inspect.js --trend 10 --detail   # last 10 runs with detail
-node inspect.js                       # list all runs
-```
+The **Run Browser** in the dashboard covers most inspection needs — browse artifacts, read reports, and compare runs without leaving the browser.
 
 ---
 
 ## Token budget
 
-Set a spend limit during the HR interview. Darkroom checks spend after each division and pauses if the limit is exceeded — you can continue or abort.
+Set a spend limit during the HR interview in **Factory Staff**. Darkroom checks spend after each division and pauses if the limit is exceeded — you can continue or abort.
 
 ---
 
@@ -290,7 +251,7 @@ memory/                       Accumulated craft knowledge — excluded from git
 
 ## Agent prompts
 
-Each division's prompts live co-located with the runner in `departments/{dept}/`. Edit them directly to change how any agent thinks. Shared prompts are in `agents/shared/` and `agents/leadership/`.
+Each division's prompts live in `departments/{dept}/`. Edit them directly to change how any agent thinks.
 
 ```
 departments/
@@ -306,3 +267,30 @@ agents/
   shared/     conventions.md  output-formats.md
   leadership/ run-brain-interviewer.md  architect-reviewer.md
 ```
+
+---
+
+## CLI reference
+
+For power users and scripting. All of these are also accessible from the dashboard.
+
+```bash
+node run-factory.js                           # new run, full pipeline
+node run-factory.js --mode auto               # fully autonomous
+node run-factory.js --profile rapid           # specific profile
+node run-factory.js --run-id <id>             # resume an existing run
+node run-factory.js --tag <label>             # label a run
+node run-factory.js --stop-after design       # stop after a specific division
+node run-factory.js --caveman                 # compressed context (~30–50% cheaper)
+```
+
+```bash
+node inspect.js <run-id>              # detailed view
+node inspect.js <run-id> --detail     # adds per-agent token and time breakdown
+node inspect.js <id1> <id2>           # compare two runs side by side
+node inspect.js --trend               # all runs in chronological order
+node inspect.js --trend 10 --detail   # last 10 runs with detail
+node inspect.js                       # list all runs
+```
+
+**Caveman mode** compresses context passed between agents. Roughly 30–50% cheaper with minimal quality loss. Also available as `FACTORY_CAVEMAN=1 node run-factory.js`.
