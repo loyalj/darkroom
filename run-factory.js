@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * run-factory.js — Pipeline entry point for the Software Factory.
+ * run-factory.js — Pipeline entry point for Darkroom.
  *
  * Runs the brain interview (once, global), loads the pipeline profile,
  * hands off to the graph executor, then writes the ledger entry.
@@ -264,7 +264,7 @@ async function main() {
   logEvent(runDir, { phase: "factory", event: "start", mode, stopAfter, caveman, tag, profile: profileName });
 
   const isDefault = profileName === "full";
-  console.log(`\n${A.bold("Software Factory")} — Pipeline Orchestrator`);
+  console.log(`\n${A.bold("Darkroom")} — Pipeline Orchestrator`);
   console.log(`Run:     ${A.cyan(runId)}${tag ? `  ·  ${A.bold(tag)}` : ""}`);
   console.log(`Profile: ${isDefault ? A.dim(profileName) : A.cyan(profileName)}`);
   console.log(`Mode:    ${mode}${stopAfter ? `  ·  stopping after ${stopAfter}` : ""}${caveman ? `  ·  ${A.dim("caveman")}` : ""}\n`);

@@ -296,7 +296,7 @@ function inspectRun(id, detail = false) {
   const meta = readRunMeta(runDir);
 
   console.log("");
-  console.log(`${A.bold("Software Factory")} — Run Inspector`);
+  console.log(`${A.bold("Darkroom")} — Run Inspector`);
   console.log(`Run:     ${A.cyan(id)}${meta?.tag ? `  ·  ${A.bold(meta.tag)}` : ""}`);
   if (manifest?.projectName) console.log(`Project: ${manifest.projectName}`);
   console.log("");
@@ -399,7 +399,7 @@ function listRuns() {
   }
 
   console.log("");
-  console.log(`${A.bold("Software Factory")} — All Runs`);
+  console.log(`${A.bold("Darkroom")} — All Runs`);
   console.log(A.dim(`  ${"D  B  R  S".padEnd(12)}Run ID       Project`));
   console.log("");
 
@@ -453,7 +453,7 @@ function compareRuns(id1, id2, detail = false) {
   }
 
   console.log("");
-  console.log(`${A.bold("Software Factory")} — Run Comparison`);
+  console.log(`${A.bold("Darkroom")} — Run Comparison`);
   console.log(`  ${runLabel(id1, proj1, meta1)}  →  ${runLabel(id2, proj2, meta2)}`);
 
   function deltaStr(a, b, fmtFn) {
@@ -608,7 +608,7 @@ function trendView(limit, detail = false) {
   });
 
   console.log("");
-  console.log(`${A.bold("Software Factory")} — Run Trend  (${ids.length} run${ids.length === 1 ? "" : "s"})`);
+  console.log(`${A.bold("Darkroom")} — Run Trend  (${ids.length} run${ids.length === 1 ? "" : "s"})`);
   console.log("");
   console.log(A.dim(`  ${"D  B  R  S".padEnd(12)}${"Run".padEnd(10)}${"Tag".padEnd(TAG_W + 2)}${"Date".padEnd(14)}${"Tokens".padStart(9)}  ${"Time".padEnd(8)}Verdict`));
   console.log("");

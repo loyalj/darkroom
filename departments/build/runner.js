@@ -833,7 +833,7 @@ async function main() {
   const memCtxPath = path.join(runDir, "memory-context.md");
   memoryContext = fileExists(memCtxPath) ? readFile(memCtxPath) : null;
 
-  console.log(`\nSoftware Factory — Build Division`);
+  console.log(`\nDarkroom — Build Division`);
   console.log(`Run: ${id}`);
   console.log(`Project: ${factoryManifest.projectName}\n`);
 

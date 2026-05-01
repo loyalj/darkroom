@@ -336,7 +336,7 @@ async function main() {
     ? readJSON(inputs["factory-manifest"])
     : { projectName: "unknown" };
 
-  console.log(`\nSoftware Factory — Security Division`);
+  console.log(`\nDarkroom — Security Division`);
   console.log(`Run: ${id}`);
   console.log(`Project: ${factoryManifest.projectName}\n`);
   console.log(`Default stance: BLOCK. Explicit approval required to proceed.\n`);

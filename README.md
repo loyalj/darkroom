@@ -1,6 +1,6 @@
-# Dark Room — Software Factory
+# Darkroom
 
-A multi-agent Claude pipeline that takes a software idea from concept to a shippable artifact. Four divisions run in sequence — Design, Build, Review, and Security — each staffed by Claude agents coordinated by a data-driven pipeline orchestrator.
+A multi-agent Claude pipeline that develops software ideas into shippable artifacts. Four divisions run in sequence — Design, Build, Review, and Security — each staffed by Claude agents coordinated by a data-driven pipeline orchestrator.
 
 ---
 
@@ -30,7 +30,7 @@ This opens a browser to complete authentication with your Anthropic account. Onc
 
 ```bash
 git clone <repo-url>
-cd dark-room
+cd darkroom
 npm install
 ```
 

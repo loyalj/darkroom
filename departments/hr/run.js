@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * departments/hr/run.js — HR orchestrator for the Software Factory.
+ * departments/hr/run.js — HR orchestrator for Darkroom.
  *
  * Manages the org: interviewing roles and building brains. Runs independently
  * of the factory — brains are set up before production starts, not during.
@@ -261,7 +261,7 @@ async function main() {
   const io = createIO(runDir);
 
   if (createRole) {
-    console.log(`\n${A.bold("Software Factory")} — HR`);
+    console.log(`\n${A.bold("Darkroom")} — HR`);
     console.log(`Task:  ${A.cyan("New Role Design")}`);
     console.log(`Run:   ${A.cyan(runId)}\n`);
 
@@ -273,7 +273,7 @@ async function main() {
     await runInterview(role, runDir, io);
     logEvent(runDir, { phase: "hr", event: "interview-complete", role: role.id });
   } else if (createWorker) {
-    console.log(`\n${A.bold("Software Factory")} — HR`);
+    console.log(`\n${A.bold("Darkroom")} — HR`);
     console.log(`Task:  ${A.cyan("New Worker Design")}`);
     console.log(`Run:   ${A.cyan(runId)}\n`);
 
@@ -289,7 +289,7 @@ async function main() {
       process.exit(1);
     }
 
-    console.log(`\n${A.bold("Software Factory")} — HR`);
+    console.log(`\n${A.bold("Darkroom")} — HR`);
     console.log(`Role:  ${A.cyan(role.name)}`);
     console.log(`Run:   ${A.cyan(runId)}\n`);
 

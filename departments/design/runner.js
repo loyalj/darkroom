@@ -146,7 +146,7 @@ async function main() {
   const memCtxPath = path.join(runDir, "memory-context.md");
   memoryContext = fileExists(memCtxPath) ? readFile(memCtxPath) : null;
 
-  console.log(`\nSoftware Factory — Design Division`);
+  console.log(`\nDarkroom — Design Division`);
   console.log(`Run: ${id}\n`);
 
   logEvent(runDir, { phase: "design", event: "start" });

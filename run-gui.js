@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * GUI server for the Dark Software Factory.
+ * GUI server for Darkroom.
  *
  * Serves a web dashboard that watches run directories and streams live
  * factory progress to the browser via SSE. The factory itself is unchanged —
@@ -1259,7 +1259,7 @@ recoverActiveProcesses();
 recoverHrSession();
 
 const server = app.listen(PORT, () => {
-  console.log(`\nSoftware Factory — GUI`);
+  console.log(`\nDarkroom — GUI`);
   console.log(`Open: http://localhost:${PORT}\n`);
 });
 

@@ -1,4 +1,4 @@
-# Software Factory — Roadmap
+# Darkroom — Roadmap
 
 A living document tracking planned structural changes and feature evolution.
 Update this as decisions are made or plans change.
