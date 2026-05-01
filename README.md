@@ -4,11 +4,13 @@ Describe an app idea. Get working, reviewed, and security-audited code.
 
 Darkroom is a multi-agent Claude pipeline that takes a plain-English idea and runs it through four divisions — Design, Build, Review, and Security — each staffed by Claude agents that interview you, write specs, generate code, test it, and hand off to the next stage.
 
+> **Current scope:** Darkroom produces CLI applications. Web app support is planned for a future release.
+
 ---
 
 ## What it does
 
-You type what you want to build. Darkroom's Design division interviews you to nail down the details, writes a locked spec, and hands it to Build. Build plans the architecture with you, writes the code, and packages it. Review stress-tests it against your spec. Security scans it for vulnerabilities.
+You type what you want to build — a CLI tool, a script, a terminal app. Darkroom's Design division interviews you to nail down the details, writes a locked spec, and hands it to Build. Build plans the architecture with you, writes the code, and packages it. Review stress-tests it against your spec. Security scans it for vulnerabilities.
 
 The whole thing runs in a terminal + browser dashboard. You participate at the decision points that matter (or let it run fully autonomous).
 
@@ -60,7 +62,7 @@ Then:
 
 The Design agent will ask what you want to build. Not sure what to try? Here's a good starter prompt:
 
-> *"A web-based Pomodoro timer. 25-minute work sessions, 5-minute breaks, tracks completed sessions, plays a soft chime when time's up. Simple and clean."*
+> *"A CLI habit tracker. Log a habit from the terminal, see a streak count, and get a summary of the past 30 days. Store data in a local JSON file. Simple and fast."*
 
 The agent will ask follow-up questions, write a spec, then hand off to Build. Build will present an architecture plan — type `lock` when you're happy with it. From there it codes, reviews the copy, and packages the result.
 
