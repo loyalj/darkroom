@@ -6,6 +6,8 @@ Darkroom is a multi-agent Claude pipeline that takes a plain-English idea and ru
 
 > **Current scope:** Darkroom produces CLI applications. Web app support is planned for a future release.
 
+![Darkroom dashboard](darkroom.PNG)
+
 ---
 
 ## What it does
