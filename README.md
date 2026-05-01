@@ -56,7 +56,7 @@ Then:
 
 1. Go to **Launch Run**
 2. Select **Rapid Prototype** (Design + Build — fastest way to start)
-3. Leave mode on **Manual** so you can participate
+3. Set mode to **Auto** — let Darkroom handle the decision points on its own
 4. Click **Launch Run**
 5. Switch to **Run Viewer**
 
