@@ -1812,28 +1812,89 @@ body {
 }
 
 #orgcharts-sidebar {
-  width: 180px;
+  width: 190px;
   flex-shrink: 0;
   border-right: 1px solid var(--border);
   overflow-y: auto;
   padding: 8px 0;
 }
 
+.orgcharts-new-btn {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 4px 8px 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.orgcharts-new-btn:hover { color: var(--text); border-color: var(--accent); }
+
+.orgcharts-new-form {
+  margin: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.orgcharts-new-name {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+}
+.orgcharts-new-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.orgcharts-new-actions button {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.orgcharts-new-actions button:last-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .orgcharts-profile-item {
-  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  padding: 8px 10px 8px 14px;
   cursor: pointer;
   border-left: 3px solid transparent;
   color: var(--muted);
   transition: color 0.1s;
 }
-
 .orgcharts-profile-item:hover { color: var(--text); }
 .orgcharts-profile-item.active { color: var(--accent); border-left-color: var(--accent); }
+
+.orgcharts-profile-item-body {
+  flex: 1;
+  min-width: 0;
+}
 
 .orgcharts-profile-name {
   display: block;
   font-size: 13px;
   font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .orgcharts-profile-desc {
@@ -1844,11 +1905,93 @@ body {
   line-height: 1.3;
 }
 
+.orgcharts-trash-btn {
+  background: transparent;
+  border: none;
+  color: var(--subtle);
+  font-size: 11px;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.orgcharts-profile-item:hover .orgcharts-trash-btn { opacity: 1; }
+.orgcharts-trash-btn:hover { color: var(--red) !important; }
+
 #orgcharts-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+}
+
+#orgcharts-toolbar {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#orgcharts-toolbar.visible { display: flex; }
+
+.orgcharts-field-input {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+  min-width: 120px;
+}
+.orgcharts-field-input:focus { border-color: var(--accent); }
+.orgcharts-desc-field { flex: 1; }
+
+.orgcharts-toolbar-spacer { flex: 0 0 8px; }
+
+.orgcharts-role-picker {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.orgcharts-delete-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.orgcharts-delete-btn:hover { border-color: var(--red); color: var(--red); }
+
+.orgcharts-save-btn {
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+  padding: 5px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.orgcharts-save-btn:disabled { opacity: 0.4; cursor: default; }
+
+#orgcharts-canvas-wrap {
   flex: 1;
   position: relative;
   overflow: hidden;
-  min-width: 0;
   min-height: 0;
 }
 
@@ -1870,38 +2013,51 @@ body {
 /* ── Org chart canvas nodes ── */
 
 #orgcharts-canvas-host .drawflow .drawflow-node {
-  cursor: default !important;
+  cursor: grab !important;
+}
+#orgcharts-canvas-host .drawflow .drawflow-node.selected {
+  cursor: grabbing !important;
 }
 
-/* Move input port to top-center */
-#orgcharts-canvas-host .drawflow .drawflow-node .inputs {
-  top: -6px !important;
+/* Output port at top-center — drag upward to escalate */
+#orgcharts-canvas-host .drawflow .drawflow-node .outputs {
+  top: -8px !important;
   bottom: auto !important;
   left: 0 !important;
   right: 0 !important;
   width: 100% !important;
-  height: 12px !important;
+  height: 16px !important;
   flex-direction: row !important;
   justify-content: center !important;
 }
 
-/* Move output port to bottom-center */
-#orgcharts-canvas-host .drawflow .drawflow-node .outputs {
+/* Input port at bottom-center — receives escalation from children */
+#orgcharts-canvas-host .drawflow .drawflow-node .inputs {
   top: auto !important;
-  bottom: -6px !important;
+  bottom: -8px !important;
   left: 0 !important;
   right: 0 !important;
   width: 100% !important;
-  height: 12px !important;
+  height: 16px !important;
   flex-direction: row !important;
   justify-content: center !important;
 }
 
-/* Hide port dots — connections are drawn via patched SVG paths */
+/* Port dots — visible and interactive */
 #orgcharts-canvas-host .drawflow .drawflow-node .input,
 #orgcharts-canvas-host .drawflow .drawflow-node .output {
-  opacity: 0 !important;
-  pointer-events: none !important;
+  width: 12px !important;
+  height: 12px !important;
+  background: var(--bg3) !important;
+  border: 2px solid var(--border) !important;
+  border-radius: 50% !important;
+  opacity: 1 !important;
+  pointer-events: all !important;
+}
+#orgcharts-canvas-host .drawflow .drawflow-node .input:hover,
+#orgcharts-canvas-host .drawflow .drawflow-node .output:hover {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
 }
 
 .org-canvas-card {

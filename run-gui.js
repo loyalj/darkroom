@@ -756,6 +756,57 @@ app.get("/api/org-profiles", (req, res) => {
   }
 });
 
+app.post("/api/org-profiles", express.json(), (req, res) => {
+  try {
+    const { name, description } = req.body ?? {};
+    if (!name?.trim()) return res.status(400).json({ error: "name required" });
+    const id = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!id) return res.status(400).json({ error: "invalid name" });
+    const profilePath = path.join(__dirname, "org", "profiles", `${id}.json`);
+    if (fs.existsSync(profilePath)) return res.status(409).json({ error: `Profile "${id}" already exists` });
+    const profile = { id, name: name.trim(), description: (description ?? "").trim(), nodes: [] };
+    fs.writeFileSync(profilePath, JSON.stringify(profile, null, 2), "utf8");
+    res.json({ id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/org-profiles/:id", express.json(), (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, nodes } = req.body ?? {};
+    if (!Array.isArray(nodes)) return res.status(400).json({ error: "nodes must be an array" });
+    const validNodes = nodes.filter((n) => n && typeof n.roleId === "string" && n.roleId.trim());
+    if (validNodes.length !== nodes.length) return res.status(400).json({ error: "each node must have a roleId string" });
+    org.saveProfile(id, { id, name: name ?? id, description: description ?? "", nodes: validNodes });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/org-profiles/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    const profilePath = path.join(__dirname, "org", "profiles", `${id}.json`);
+    if (!fs.existsSync(profilePath)) return res.status(404).json({ error: "Not found" });
+    fs.unlinkSync(profilePath);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/org/roles", (req, res) => {
+  try {
+    const roles = org.reloadRoles();
+    res.json(Object.values(roles).map((r) => ({ id: r.id, name: r.name, description: r.description ?? "" })));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/profiles/:name", (req, res) => {
   const { name } = req.params;
   if (!/^[\w-]+$/.test(name)) return res.status(400).json({ error: "invalid name" });
@@ -1132,21 +1183,24 @@ app.get("/api/org", (req, res) => {
     if (profileName) org.setActiveProfile(profileName);
     const profile  = org.getActiveProfile();
     const profiles = org.loadProfiles();
-    const nodes = profile.nodes.map((n) => ({
-      roleId:      n.roleId,
-      escalatesTo: n.escalatesTo ?? null,
-      role: {
-        id:          n.role.id,
-        name:        n.role.name,
-        description: n.role.description,
-        domains:     n.role.domains     ?? [],
-        contextFile: n.role.contextFile ?? null,
-      },
-      hasBrain:    org.brainExists(n.role),
-      brainContent: org.brainExists(n.role) ? org.readBrain(n.role) : null,
-    }));
+    const nodes = profile.nodes
+      .filter((n) => n.role != null)
+      .map((n) => ({
+        roleId:      n.roleId,
+        escalatesTo: n.escalatesTo ?? null,
+        role: {
+          id:          n.role.id,
+          name:        n.role.name,
+          description: n.role.description,
+          domains:     n.role.domains     ?? [],
+          contextFile: n.role.contextFile ?? null,
+        },
+        hasBrain:    org.brainExists(n.role),
+        brainContent: org.brainExists(n.role) ? org.readBrain(n.role) : null,
+      }));
     res.json({
       activeProfile:   profile.id,
+      profileMeta:     { id: profile.id, name: profile.name ?? profile.id, description: profile.description ?? "" },
       profiles,
       nodes,
       decisionRouting: profile.decisionRouting ?? {},
@@ -1204,7 +1258,16 @@ app.get("/api/memory", (req, res) => {
 recoverActiveProcesses();
 recoverHrSession();
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\nSoftware Factory — GUI`);
   console.log(`Open: http://localhost:${PORT}\n`);
+});
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`\n  Error: port ${PORT} is already in use.\n  Stop the other process and try again, or use --port to pick a different port.\n`);
+  } else {
+    console.error(`\n  Server error: ${err.message}\n`);
+  }
+  process.exit(1);
 });

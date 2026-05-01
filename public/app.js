@@ -31,7 +31,7 @@ const state = {
   memory: { data: null, activeDept: "design", activeTab: "wiki", editMode: false },
   // Factory Org
   org: { roles: [], activeRoleId: null, session: null },
-  orgCharts: { profiles: [], activeProfile: null, nodes: [], drawflow: null },
+  orgCharts: { profiles: [], activeProfile: null, profileMeta: null, nodes: [], drawflow: null, dirty: false, allRoles: [] },
   // Factory Workers
   workers: { list: [], slots: [], activeId: null },
   // Profiles
@@ -2653,33 +2653,282 @@ async function loadOrgChartsData(profileName) {
   sidebar.innerHTML = `<div style="color:var(--muted);padding:12px 14px;font-size:12px;">Loading…</div>`;
   try {
     const qs = profileName ? `?profile=${encodeURIComponent(profileName)}` : "";
-    const res  = await fetch(`/api/org${qs}`);
-    const data = await res.json();
-    state.orgCharts.profiles     = data.profiles ?? [];
+    const [orgRes, rolesRes] = await Promise.all([
+      fetch(`/api/org${qs}`),
+      fetch("/api/org/roles"),
+    ]);
+    const data  = await orgRes.json();
+    const roles = await rolesRes.json();
+    state.orgCharts.profiles      = data.profiles ?? [];
     state.orgCharts.activeProfile = data.activeProfile;
-    state.orgCharts.nodes        = data.nodes ?? [];
+    state.orgCharts.profileMeta   = data.profileMeta ?? null;
+    state.orgCharts.nodes         = data.nodes ?? [];
+    state.orgCharts.allRoles      = Array.isArray(roles) ? roles : [];
+    state.orgCharts.dirty         = false;
   } catch {
     sidebar.innerHTML = `<div style="color:var(--red);padding:12px 14px;font-size:12px;">Failed to load</div>`;
     return;
   }
   renderOrgChartsSidebar();
   renderOrgChartsTree();
+  syncOrgChartsToolbar();
 }
 
 function renderOrgChartsSidebar() {
   const sidebar = $("#orgcharts-sidebar");
   sidebar.innerHTML = "";
+
+  const newBtn = document.createElement("button");
+  newBtn.className = "orgcharts-new-btn";
+  newBtn.textContent = "+ New Chart";
+  newBtn.addEventListener("click", () => showOrgNewForm(sidebar, newBtn));
+  sidebar.appendChild(newBtn);
+
   for (const p of state.orgCharts.profiles) {
+    const profileKey = p.id ?? p.name;
     const item = document.createElement("div");
-    item.className = "orgcharts-profile-item" + (p.name === state.orgCharts.activeProfile ? " active" : "");
-    item.dataset.profile = p.name;
+    item.className = "orgcharts-profile-item" + (profileKey === state.orgCharts.activeProfile ? " active" : "");
     item.innerHTML = `
-      <span class="orgcharts-profile-name">${escHtml(p.name)}</span>
-      ${p.description ? `<span class="orgcharts-profile-desc">${escHtml(p.description)}</span>` : ""}
+      <div class="orgcharts-profile-item-body">
+        <span class="orgcharts-profile-name">${escHtml(p.name ?? profileKey)}</span>
+        ${p.description ? `<span class="orgcharts-profile-desc">${escHtml(p.description)}</span>` : ""}
+      </div>
+      <button class="orgcharts-trash-btn" title="Delete">✕</button>
     `;
-    item.addEventListener("click", () => loadOrgChartsData(p.name));
+    item.querySelector(".orgcharts-profile-item-body").addEventListener("click", () => loadOrgChartsData(profileKey));
+    item.querySelector(".orgcharts-trash-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteOrgChart(profileKey);
+    });
     sidebar.appendChild(item);
   }
+}
+
+function showOrgNewForm(sidebar, newBtn) {
+  if (sidebar.querySelector(".orgcharts-new-form")) return;
+  const form = document.createElement("div");
+  form.className = "orgcharts-new-form";
+  form.innerHTML = `
+    <input type="text" class="orgcharts-new-name" placeholder="e.g. Startup" />
+    <div class="orgcharts-new-actions">
+      <button class="cancel-btn">Cancel</button>
+      <button class="create-btn">Create</button>
+    </div>
+  `;
+  sidebar.insertBefore(form, newBtn.nextSibling);
+  const nameInput = form.querySelector(".orgcharts-new-name");
+  nameInput.focus();
+  const doCreate = () => createOrgChart(nameInput.value.trim(), form);
+  form.querySelector(".cancel-btn").addEventListener("click", () => form.remove());
+  form.querySelector(".create-btn").addEventListener("click", doCreate);
+  nameInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doCreate();
+    if (e.key === "Escape") form.remove();
+  });
+}
+
+async function createOrgChart(name, formEl) {
+  if (!name) return;
+  try {
+    const res = await fetch("/api/org-profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const errEl = formEl?.querySelector(".orgcharts-new-name");
+      if (errEl) errEl.style.borderColor = "var(--red)";
+      return;
+    }
+    await loadOrgChartsData(data.id);
+  } catch {}
+}
+
+async function deleteOrgChart(profileId) {
+  if (!confirm(`Delete org chart "${profileId}"?`)) return;
+  try {
+    const res = await fetch(`/api/org-profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
+    if (res.ok) {
+      if (state.orgCharts.activeProfile === profileId) {
+        state.orgCharts.activeProfile = null;
+        state.orgCharts.profileMeta = null;
+      }
+      await loadOrgChartsData();
+    }
+  } catch {}
+}
+
+async function saveOrgChart() {
+  const profileId = state.orgCharts.activeProfile;
+  if (!profileId) return;
+  const saveBtn = $("#orgcharts-save-btn");
+  const name = $("#orgcharts-name-input")?.value.trim() || profileId;
+  const description = $("#orgcharts-desc-input")?.value.trim() ?? "";
+  const nodes = orgChartToNodes();
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Saving…"; }
+  try {
+    const res = await fetch(`/api/org-profiles/${encodeURIComponent(profileId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description, nodes }),
+    });
+    if (res.ok) {
+      await loadOrgChartsData(profileId);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = `Save — ${err.error ?? "error"}`; }
+      setTimeout(() => { if (saveBtn) saveBtn.textContent = "Save"; }, 4000);
+    }
+  } catch (e) {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "Save — network error"; }
+    setTimeout(() => { if (saveBtn) saveBtn.textContent = "Save"; }, 4000);
+  }
+}
+
+function orgChartToNodes() {
+  const df = state.orgCharts.drawflow;
+  if (!df) return [];
+  const data = df.export().drawflow.Home.data;
+
+  let humanDfId = null;
+  const dfIdToRoleId = {};
+  for (const [dfId, node] of Object.entries(data)) {
+    const roleId = node.data?.roleId;
+    if (roleId === "__human__") humanDfId = dfId;
+    else if (roleId) dfIdToRoleId[dfId] = roleId;
+  }
+
+  const nodes = [];
+  for (const [dfId, node] of Object.entries(data)) {
+    const roleId = node.data?.roleId;
+    if (!roleId || roleId === "__human__") continue;
+    // Escalation target is the destination of the outgoing connection on output_1
+    const outConns = node.outputs?.output_1?.connections ?? [];
+    let escalatesTo = null;
+    if (outConns.length > 0) {
+      const targetDfId = String(outConns[0].node);
+      if (targetDfId !== humanDfId) escalatesTo = dfIdToRoleId[targetDfId] ?? null;
+    }
+    nodes.push({ roleId, escalatesTo });
+  }
+  return nodes;
+}
+
+function syncOrgChartsToolbar() {
+  const toolbar = $("#orgcharts-toolbar");
+  const saveBtn = $("#orgcharts-save-btn");
+  if (!toolbar) return;
+  if (!state.orgCharts.activeProfile) {
+    toolbar.classList.remove("visible");
+    return;
+  }
+  toolbar.classList.add("visible");
+  const meta = state.orgCharts.profileMeta;
+  const nameInput = $("#orgcharts-name-input");
+  const descInput = $("#orgcharts-desc-input");
+  if (nameInput) nameInput.value = meta?.name ?? state.orgCharts.activeProfile;
+  if (descInput) descInput.value = meta?.description ?? "";
+  if (saveBtn) saveBtn.disabled = !state.orgCharts.dirty;
+  populateOrgRolePicker();
+}
+
+function populateOrgRolePicker() {
+  const select = $("#orgcharts-role-picker");
+  if (!select) return;
+  const df = state.orgCharts.drawflow;
+  const inCanvas = new Set();
+  if (df) {
+    const data = df.export().drawflow.Home.data;
+    for (const node of Object.values(data)) {
+      if (node.data?.roleId && node.data.roleId !== "__human__") inCanvas.add(node.data.roleId);
+    }
+  }
+  const available = (state.orgCharts.allRoles ?? []).filter((r) => !inCanvas.has(r.id));
+  select.innerHTML = `<option value="">+ Add Role</option>`;
+  for (const role of available) {
+    const opt = document.createElement("option");
+    opt.value = role.id;
+    opt.textContent = role.name;
+    select.appendChild(opt);
+  }
+  select.disabled = available.length === 0;
+}
+
+function addRoleNodeToCanvas(roleId) {
+  const df = state.orgCharts.drawflow;
+  if (!df) return;
+  const role = state.orgCharts.allRoles.find((r) => r.id === roleId);
+  if (!role) return;
+  const host = $("#orgcharts-canvas-host");
+  const cx = host ? ((host.offsetWidth / 2) - df.canvas_x) / (df.zoom ?? 1) - 130 : 200;
+  const cy = host ? ((host.offsetHeight / 2) - df.canvas_y) / (df.zoom ?? 1) - 45 : 200;
+  const jitter = () => (Math.random() - 0.5) * 120;
+  const html = `<div class="org-canvas-card">
+    <div class="org-canvas-header">
+      <span class="org-canvas-dot missing"></span>
+      <span class="org-canvas-name">${escHtml(role.name)}</span>
+    </div>
+    ${role.description ? `<span class="org-canvas-desc">${escHtml(role.description)}</span>` : ""}
+  </div>`;
+  df.addNode("role", 1, 1, cx + jitter(), cy + jitter(), "org-role-node", { roleId }, html);
+  markOrgDirty();
+  populateOrgRolePicker();
+  const emptyEl = $("#orgcharts-canvas-empty");
+  if (emptyEl) emptyEl.style.display = "none";
+}
+
+function markOrgDirty() {
+  state.orgCharts.dirty = true;
+  const btn = $("#orgcharts-save-btn");
+  if (btn) btn.disabled = false;
+}
+
+function patchOrgChartBeziers() {
+  const df = state.orgCharts.drawflow;
+  if (!df || !df.precanvas) return;
+  if (df._bezierTimer) clearTimeout(df._bezierTimer);
+  df._bezierTimer = setTimeout(() => {
+    const host = $("#orgcharts-canvas-host");
+    if (!host) return;
+
+    const zoom     = df.zoom ?? 1;
+    const canvasX  = df.canvas_x ?? 0;
+    const canvasY  = df.canvas_y ?? 0;
+    const hostRect = host.getBoundingClientRect();
+
+    // Drawflow gives each connection element a class like "node_in_node-N node_out_node-M"
+    // Use that to find the right path element per connection without relying on array order.
+    const pathEls = host.querySelectorAll(".drawflow .connection");
+    pathEls.forEach((connEl) => {
+      const pathEl = connEl.querySelector(".main-path");
+      if (!pathEl) return;
+
+      // Extract source and dest node IDs from the connection element's classes
+      const outMatch = connEl.className.match(/node_out_node-(\d+)/);
+      const inMatch  = connEl.className.match(/node_in_node-(\d+)/);
+      if (!outMatch || !inMatch) return;
+
+      const srcEl = document.getElementById(`node-${outMatch[1]}`);
+      const dstEl = document.getElementById(`node-${inMatch[1]}`);
+      if (!srcEl || !dstEl) return;
+
+      const srcPort = srcEl.querySelector(".output");
+      const dstPort = dstEl.querySelector(".input");
+      if (!srcPort || !dstPort) return;
+
+      const sr = srcPort.getBoundingClientRect();
+      const dr = dstPort.getBoundingClientRect();
+
+      const sx = (sr.left + sr.width  / 2 - hostRect.left - canvasX) / zoom;
+      const sy = (sr.top  + sr.height / 2 - hostRect.top  - canvasY) / zoom;
+      const ex = (dr.left + dr.width  / 2 - hostRect.left - canvasX) / zoom;
+      const ey = (dr.top  + dr.height / 2 - hostRect.top  - canvasY) / zoom;
+
+      const dy = Math.max(30, Math.abs(sy - ey) * 0.5);
+      pathEl.setAttribute("d", `M ${sx} ${sy} C ${sx} ${sy - dy} ${ex} ${ey + dy} ${ex} ${ey}`);
+    });
+  }, 50);
 }
 
 function initOrgChartsCanvas() {
@@ -2690,7 +2939,7 @@ function initOrgChartsCanvas() {
   const df = new Drawflow(host);
   df.reroute = false;
   df.force_first_input = false;
-  df.editor_mode = "view";
+  df.editor_mode = "edit";
   df.start();
   state.orgCharts.drawflow = df;
 
@@ -2717,6 +2966,25 @@ function initOrgChartsCanvas() {
     else df.zoom_out();
     syncBg();
   }, { passive: false });
+
+  df.on("connectionCreated", ({ output_id, input_id, output_class, input_class }) => {
+    // Enforce single outgoing connection per role (one escalation target)
+    const srcNode = df.getNodeFromId(output_id);
+    if (srcNode?.data?.roleId && srcNode.data.roleId !== "__human__") {
+      const existing = [...(srcNode.outputs?.output_1?.connections ?? [])];
+      for (const conn of existing) {
+        if (String(conn.node) !== String(input_id)) {
+          df.removeSingleConnection(output_id, parseInt(conn.node), output_class, conn.output);
+        }
+      }
+    }
+    markOrgDirty();
+    patchOrgChartBeziers();
+  });
+
+  df.on("connectionRemoved", () => { markOrgDirty(); patchOrgChartBeziers(); });
+  df.on("nodeMoved",         () => { patchOrgChartBeziers(); });
+  df.on("nodeRemoved",       () => { markOrgDirty(); populateOrgRolePicker(); });
 }
 
 function renderOrgChartsTree() {
@@ -2728,14 +2996,14 @@ function renderOrgChartsTree() {
   if (!df) return;
   df.clear();
 
-  if (nodes.length === 0) {
+  // Always show empty state if no nodes AND no active profile
+  if (nodes.length === 0 && !state.orgCharts.activeProfile) {
     if (emptyEl) emptyEl.style.display = "flex";
     return;
   }
   if (emptyEl) emptyEl.style.display = "none";
 
-  // Build parent→children map. Roles with no known parent escalate to Human.
-  const HUMAN    = "__human__";
+  const HUMAN = "__human__";
   const allRoleIds = new Set(nodes.map((n) => n.roleId));
   const childrenOf = { [HUMAN]: [] };
   const byRoleId   = {};
@@ -2746,38 +3014,36 @@ function renderOrgChartsTree() {
     childrenOf[parent].push(n.roleId);
   }
 
-  // Top-down tree layout: depth→Y, slot→X.
-  // Leaf nodes consume horizontal slots; parents center over their children.
   const NODE_W = 260, NODE_H = 90, H_GAP = 40, V_GAP = 80;
   const positions = {};
   let slot = 0;
 
   function placeNode(id, depth) {
-    const children = childrenOf[id] ?? [];
+    const children = (childrenOf[id] ?? []).filter((cid) => !positions[cid]); // guard cycles
     if (children.length === 0) {
       positions[id] = { x: slot * (NODE_W + H_GAP), y: depth * (NODE_H + V_GAP) };
       slot++;
       return;
     }
+    positions[id] = { x: 0, y: depth * (NODE_H + V_GAP) }; // placeholder to break cycles
     for (const cid of children) placeNode(cid, depth + 1);
-    const firstX = positions[children[0]].x;
-    const lastX  = positions[children[children.length - 1]].x;
+    const placedChildren = children.filter((cid) => positions[cid]);
+    if (placedChildren.length === 0) { slot++; return; }
+    const firstX = positions[placedChildren[0]].x;
+    const lastX  = positions[placedChildren[placedChildren.length - 1]].x;
     positions[id] = { x: (firstX + lastX) / 2, y: depth * (NODE_H + V_GAP) };
   }
   placeNode(HUMAN, 0);
 
-  // Add Drawflow nodes
   const dfIds = {};
   for (const [id, pos] of Object.entries(positions)) {
-    const isHuman   = id === HUMAN;
-    const n         = byRoleId[id];
-    const hasOutput = (childrenOf[id] ?? []).length > 0;
-
-    const name = isHuman ? "Human" : (n.role?.name ?? n.roleId);
-    const desc = (!isHuman && n.role?.description) ? n.role.description : "";
-    const dotHtml = isHuman ? "" : n.hasBrain
+    const isHuman = id === HUMAN;
+    const n       = byRoleId[id];
+    const name    = isHuman ? "Human" : (n.role?.name ?? n.roleId);
+    const desc    = (!isHuman && n.role?.description) ? n.role.description : "";
+    const dotHtml = isHuman ? "" : (n.hasBrain
       ? `<span class="org-canvas-dot ready"></span>`
-      : `<span class="org-canvas-dot missing"></span>`;
+      : `<span class="org-canvas-dot missing"></span>`);
     const html = `<div class="org-canvas-card">
       <div class="org-canvas-header">
         ${dotHtml}
@@ -2786,10 +3052,12 @@ function renderOrgChartsTree() {
       ${desc ? `<span class="org-canvas-desc">${escHtml(desc)}</span>` : ""}
     </div>`;
 
+    // Human: 1 input (receives escalation from roles), 0 outputs (terminal)
+    // Role:  1 input (receives escalation from sub-roles), 1 output (escalates upward)
     const dfId = df.addNode(
       isHuman ? "human" : "role",
+      1,
       isHuman ? 0 : 1,
-      hasOutput ? 1 : 0,
       pos.x, pos.y,
       isHuman ? "org-human-node" : "org-role-node",
       { roleId: id },
@@ -2798,17 +3066,14 @@ function renderOrgChartsTree() {
     dfIds[id] = dfId;
   }
 
-  // Draw connections parent→child, track order for path patching
-  const connList = [];
+  // Connections flow child→parent (role escalates to its parent)
   for (const n of nodes) {
     const parent = (n.escalatesTo && allRoleIds.has(n.escalatesTo)) ? n.escalatesTo : HUMAN;
     if (dfIds[parent] != null && dfIds[n.roleId] != null) {
-      df.addConnection(dfIds[parent], dfIds[n.roleId], "output_1", "input_1");
-      connList.push({ srcId: parent, dstId: n.roleId });
+      df.addConnection(dfIds[n.roleId], dfIds[parent], "output_1", "input_1");
     }
   }
 
-  // Center horizontally; pin root near top with padding
   const host = $("#orgcharts-canvas-host");
   if (host && df.precanvas) {
     const xs   = Object.values(positions).map((p) => p.x);
@@ -2821,24 +3086,7 @@ function renderOrgChartsTree() {
     if (df._syncBg) df._syncBg();
   }
 
-  // Patch Drawflow's horizontal beziers with vertical control points so
-  // connections flow top→bottom rather than left→right.
-  if (df._patchTimer) clearTimeout(df._patchTimer);
-  df._patchTimer = setTimeout(() => {
-    const pathEls = $("#orgcharts-canvas-host")?.querySelectorAll(".drawflow .connection .main-path");
-    if (!pathEls) return;
-    connList.forEach((conn, i) => {
-      const pathEl = pathEls[i];
-      if (!pathEl) return;
-      const sp = positions[conn.srcId];
-      const dp = positions[conn.dstId];
-      if (!sp || !dp) return;
-      const sx = sp.x + NODE_W / 2,  sy = sp.y + NODE_H;
-      const ex = dp.x + NODE_W / 2,  ey = dp.y;
-      const dy = Math.max(30, (ey - sy) * 0.5);
-      pathEl.setAttribute("d", `M ${sx} ${sy} C ${sx} ${sy + dy} ${ex} ${ey - dy} ${ex} ${ey}`);
-    });
-  }, 0);
+  patchOrgChartBeziers();
 }
 
 // ---------------------------------------------------------------------------
@@ -3055,6 +3303,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Org Charts
   $("#orgcharts-refresh-btn").addEventListener("click", () => loadOrgChartsData(state.orgCharts.activeProfile));
+  $("#orgcharts-save-btn").addEventListener("click", saveOrgChart);
+  $("#orgcharts-delete-btn").addEventListener("click", () => deleteOrgChart(state.orgCharts.activeProfile));
+  $("#orgcharts-role-picker").addEventListener("change", (e) => {
+    if (e.target.value) { addRoleNodeToCanvas(e.target.value); e.target.value = ""; }
+  });
+  $("#orgcharts-name-input").addEventListener("input", markOrgDirty);
+  $("#orgcharts-desc-input").addEventListener("input", markOrgDirty);
   $("#org-interview-btn").addEventListener("click", async () => {
     const roleId = state.org.activeRoleId;
     if (!roleId || state.org.session) return;

@@ -322,10 +322,20 @@
         <div id="orgcharts-body">
           <div id="orgcharts-sidebar"></div>
           <div id="orgcharts-main">
-            <div id="orgcharts-canvas-host"></div>
-            <div id="orgcharts-canvas-empty" class="empty-state">
-              <span>Select a profile</span>
-              <span class="hint">The org hierarchy will appear here.</span>
+            <div id="orgcharts-toolbar">
+              <input id="orgcharts-name-input" type="text" placeholder="Chart name" class="orgcharts-field-input" />
+              <input id="orgcharts-desc-input" type="text" placeholder="Description (optional)" class="orgcharts-field-input orgcharts-desc-field" />
+              <div class="orgcharts-toolbar-spacer"></div>
+              <select id="orgcharts-role-picker" class="orgcharts-role-picker"><option value="">+ Add Role</option></select>
+              <button id="orgcharts-delete-btn" class="orgcharts-delete-btn">Delete Chart</button>
+              <button id="orgcharts-save-btn" class="orgcharts-save-btn" disabled>Save</button>
+            </div>
+            <div id="orgcharts-canvas-wrap">
+              <div id="orgcharts-canvas-host"></div>
+              <div id="orgcharts-canvas-empty" class="empty-state">
+                <span>Select a chart</span>
+                <span class="hint">The org hierarchy will appear here.</span>
+              </div>
             </div>
           </div>
         </div>
