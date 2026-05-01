@@ -861,7 +861,10 @@ function renderLaunchProfileGrid() {
   for (const profile of launchState.profiles) {
     const card = document.createElement("div");
     card.className = "profile-launch-card" + (launchState.selectedProfile === profile.name ? " selected" : "");
-    const pipelineHtml = (profile.nodes ?? []).map((n, i) =>
+    const orderedNodes = [...(profile.nodes ?? [])].sort((a, b) =>
+      (a === "previous-run" ? -1 : b === "previous-run" ? 1 : 0)
+    );
+    const pipelineHtml = orderedNodes.map((n, i) =>
       (i > 0 ? `<span class="profile-mini-arrow">›</span>` : "") +
       `<span class="profile-mini-node" style="${nodeInlineStyle(n)}">${escHtml(n)}</span>`
     ).join("");
@@ -913,6 +916,14 @@ async function populateSourceRunSelect() {
   const sourceSection = $("#launch-source-section");
   const sel = $("#launch-source-select");
 
+  // Only profiles with a previous-run node accept a source run
+  if (!profile?.nodes?.includes("previous-run")) {
+    sourceSection.hidden = true;
+    launchState.sourceRunId = null;
+    updateLaunchButton();
+    return;
+  }
+
   // Start hidden while loading to avoid a flash for profiles with no eligible runs
   sourceSection.hidden = true;
   launchState.sourceRunId = null;
@@ -963,17 +974,23 @@ function renderStopAfterRail(nodes) {
   const rail = $("#launch-stopafter-rail");
   section.hidden = nodes.length === 0;
   rail.innerHTML = "";
-  for (const node of nodes) {
-    const btn = document.createElement("button");
-    btn.className = "sa-node";
+  const orderedNodes = [...nodes].sort((a, b) =>
+    (a === "previous-run" ? -1 : b === "previous-run" ? 1 : 0)
+  );
+  for (const node of orderedNodes) {
+    const isSource = node === "previous-run";
+    const btn = document.createElement(isSource ? "span" : "button");
+    btn.className = "sa-node" + (isSource ? " sa-node-source" : "");
     btn.setAttribute("style", nodeInlineStyle(node));
     btn.textContent = node;
     btn.dataset.node = node;
-    updateSaNodeClass(btn, node, nodes);
-    btn.addEventListener("click", () => {
-      launchState.stopAfter = launchState.stopAfter === node ? null : node;
-      rail.querySelectorAll(".sa-node").forEach((b) => updateSaNodeClass(b, b.dataset.node, nodes));
-    });
+    if (!isSource) {
+      updateSaNodeClass(btn, node, orderedNodes);
+      btn.addEventListener("click", () => {
+        launchState.stopAfter = launchState.stopAfter === node ? null : node;
+        rail.querySelectorAll(".sa-node:not(.sa-node-source)").forEach((b) => updateSaNodeClass(b, b.dataset.node, orderedNodes));
+      });
+    }
     rail.appendChild(btn);
   }
 }

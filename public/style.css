@@ -47,7 +47,7 @@ body {
 }
 
 #sidebar.collapsed {
-  width: 36px;
+  width: 56px;
 }
 
 #sidebar-header {
@@ -62,6 +62,25 @@ body {
 #sidebar.collapsed #sidebar-header {
   justify-content: center;
   padding: 0 0 12px;
+}
+
+#sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#sidebar-logo {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  filter: brightness(1.4) saturate(1.4) drop-shadow(0 0 4px #FF0033) drop-shadow(0 0 10px #FF003388);
+}
+
+#sidebar.collapsed #sidebar-logo {
+  width: 18px;
+  height: 18px;
 }
 
 #sidebar h1 {
@@ -630,6 +649,8 @@ body {
 }
 .sa-node:hover { filter: brightness(1.15); }
 .sa-node.excluded { opacity: 0.25; }
+.sa-node.sa-node-source { cursor: default; opacity: 0.5; }
+.sa-node.sa-node-source:hover { filter: none; }
 
 .launch-options-row { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
 .launch-option { display: flex; align-items: center; gap: 10px; }
