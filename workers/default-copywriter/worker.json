@@ -4,7 +4,5 @@
   "description": "Writes and reviews user-facing copy and documentation.",
   "slotType": "copywriter",
   "department": "build",
-  "builtin": true,
-  "sourceFile": "departments/build/copywriter.md",
   "created": "2025-01-01T00:00:00.000Z"
 }

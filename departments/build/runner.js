@@ -219,25 +219,6 @@ async function runArchitectInterview(io, runDir, buildSpec, factoryManifest) {
 // Task execution
 // ---------------------------------------------------------------------------
 
-function getTaskInputFiles(task, buildDir) {
-  if (!task.dependsOn || task.dependsOn.length === 0) return "";
-  const parts = [];
-  for (const depId of task.dependsOn) {
-    // Find files produced by the dependency task
-    const depTaskPath = path.join(buildDir, `task-${depId}-outputs.json`);
-    if (fileExists(depTaskPath)) {
-      const outputs = readJSON(depTaskPath);
-      for (const filePath of outputs) {
-        const fullPath = path.join(buildDir, "src", filePath);
-        if (fileExists(fullPath)) {
-          parts.push(`### ${filePath}\n\`\`\`\n${readFile(fullPath)}\n\`\`\``);
-        }
-      }
-    }
-  }
-  return parts.length > 0 ? `## Relevant Interfaces\n\n${parts.join("\n\n")}` : "";
-}
-
 async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, display, attempt = 1, previousFailure = null) {
   const taskStatusPath = path.join(buildDir, `task-${task.id}-status.json`);
 
@@ -252,7 +233,6 @@ async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, 
   const srcDir = path.join(buildDir, "src");
   fs.mkdirSync(srcDir, { recursive: true });
 
-  const relevantInterfaces = getTaskInputFiles(task, buildDir);
   const retryContext = previousFailure
     ? `## Previous Attempt Failure\n\n${previousFailure}`
     : "";
@@ -270,7 +250,6 @@ async function executeTask(task, buildDir, buildSpec, architecturePlan, runDir, 
     `## Build Spec\n\n${buildSpec}`,
     `## Architecture Plan\n\n${architecturePlan}`,
     `## Your Task\n\n${JSON.stringify(task, null, 2)}`,
-    relevantInterfaces,
     retryContext,
     `## File Paths\n\nAlways write files using ABSOLUTE paths. Never use relative paths.\n\nSource directory: ${srcDir}\n\nExpected output files (use these exact absolute paths):\n${absoluteOutputs.map((p) => `- ${p}`).join("\n")}`,
   ].filter(Boolean).join("\n\n---\n\n");

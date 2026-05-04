@@ -328,6 +328,8 @@ async function main() {
 }
 
 main().catch((err) => {
+  const { writeActivity } = require("./lib/display");
+  writeActivity({ type: "error", text: `Fatal error: ${err.message ?? String(err)}` });
   console.error(A.red("✗  Fatal:"), err.message ?? err);
   process.exit(1);
 });

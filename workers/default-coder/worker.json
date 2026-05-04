@@ -4,7 +4,5 @@
   "description": "Implements individual tasks from the architect's plan.",
   "slotType": "coder",
   "department": "build",
-  "builtin": true,
-  "sourceFile": "departments/build/implementation.md",
   "created": "2025-01-01T00:00:00.000Z"
 }

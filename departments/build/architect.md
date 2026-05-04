@@ -68,7 +68,7 @@ When the user confirms, output a JSON object with this structure:
 - `dependsOn` lists task IDs that must be complete before this task is dispatched
 - `specContext` must reference specific sections or acceptance criteria from the Build Spec so the implementation agent knows what it is responsible for
 - Integration, copy writing, verification, and packaging are NOT included in the task graph — those are orchestrated separately
-- Task granularity: each task should produce a coherent, independently-testable unit of code. Not one task per function, not one task for the whole project.
+- Task granularity: each task should produce a coherent unit of code, roughly 50–300 lines of implementation. Not one task per function, not one task for the whole project — even if the project outputs a single file. A single-file project should still be broken into tasks by logical section (e.g., data model + constants, core logic, renderer, game loop). "One file" is never a reason to create one task.
 
 # Constraints
 

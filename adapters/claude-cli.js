@@ -34,7 +34,8 @@ function stripCodeFence(s) {
 // Adapter interface
 // ---------------------------------------------------------------------------
 
-const CLAUDE_TIMEOUT_MS = 8 * 60 * 1000; // 8 minutes
+const CLAUDE_TIMEOUT_MS = 8 * 60 * 1000;  // 8 minutes  (structured JSON calls)
+const CLAUDE_TOOL_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes (tool-use / coder calls)
 const CLAUDE_MAX_RETRIES = 2;
 
 // Build args, writing system prompt to a temp file if it exceeds the Windows command line limit.
@@ -179,10 +180,21 @@ function claudeToolCallAsync(appendSystemPrompt, userMessage, cwd, onUsage) {
     proc.stdin.end();
 
     let stdout = "";
+    let settled = false;
     proc.stdout.on("data", (c) => { stdout += c; });
     proc.stderr.on("data", () => {});
 
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      proc.kill("SIGTERM");
+      reject(new Error(`claude CLI timed out after ${CLAUDE_TOOL_TIMEOUT_MS / 1000}s`));
+    }, CLAUDE_TOOL_TIMEOUT_MS);
+
     proc.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (code !== 0) {
         reject(new Error(`claude exited with status ${code}`));
       } else {
@@ -194,7 +206,12 @@ function claudeToolCallAsync(appendSystemPrompt, userMessage, cwd, onUsage) {
       }
     });
 
-    proc.on("error", reject);
+    proc.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 

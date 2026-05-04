@@ -25,6 +25,8 @@ const state = {
   pinnedTabKey: null,    // null = auto-follow transcripts
   // Activity feed
   activity: [],
+  activityLog: [],
+  activityAutoScroll: true,
   // Factory input chat pane
   pendingInput: null,
   // Factory Memory
@@ -160,7 +162,7 @@ function renderPipelineBar(pState) {
     key,
     label: key.charAt(0).toUpperCase() + key.slice(1),
   }));
-  const bar = $("#pipeline-bar");
+  const bar = $("#phase-blocks");
   bar.innerHTML = "";
 
   const timings = derivePhaseTimings(state.logEvents, profileNodes);
@@ -322,11 +324,82 @@ function renderMonitorHeader(runId, pState) {
     <h2>Run Viewer</h2>
     <span class="run-id">${runId ? runId.slice(0, 8) : "—"}</span>
     ${meta?.tag ? `<span class="tag-badge">${escHtml(meta.tag)}</span>` : ""}
-    <span class="subtitle" style="margin-left: auto">${escHtml(pState?.currentStep ?? "—")}</span>
+    <span class="subtitle" style="margin-left: auto; color: var(--muted);">${runId ? escHtml(pState?.verdict ?? "running") : "Waiting for a run…"}</span>
   `;
 }
 
 // ---------------------------------------------------------------------------
+// Activity tab helpers
+// ---------------------------------------------------------------------------
+
+function getDisplayCategories() {
+  return [...state.fileCategories, { label: "Activity", files: [] }];
+}
+
+function activityEntryToLine(ev) {
+  switch (ev.type) {
+    case "step":
+      return { text: `── ${ev.dept}  ${ev.phase}${ev.step ? `  ${ev.step}` : ""}`, cls: "act-full-step" };
+    case "line":
+      if (ev.subtype === "interview") return null;
+      return { text: ev.text ?? "", cls: classifyActivityLine(ev.text ?? "") };
+    case "finish":
+      return { text: `✓ ${ev.phase} — ${ev.summary}`, cls: "act-ok" };
+    case "ticker":
+      return { text: ev.label ?? "", cls: "act-ticker" };
+    case "ticker-done":
+      return { text: `✓ ${ev.summary || ev.label}`, cls: "act-ok" };
+    case "ticker-fail":
+      return { text: `✗ ${ev.reason}`, cls: "act-err" };
+    case "error":
+      return { text: `✗ ${ev.text}`, cls: "act-err" };
+    default:
+      return null;
+  }
+}
+
+function renderActivityTab() {
+  const docBody = $("#doc-body");
+  docBody.className = "doc-activity";
+  const frag = document.createDocumentFragment();
+  for (const ev of state.activityLog) {
+    const r = activityEntryToLine(ev);
+    if (!r) continue;
+    const div = document.createElement("div");
+    div.className = "act-full-line" + (r.cls ? " " + r.cls : "");
+    div.textContent = r.text;
+    frag.appendChild(div);
+  }
+  docBody.innerHTML = "";
+  docBody.appendChild(frag);
+  if (state.activityAutoScroll) docBody.scrollTop = docBody.scrollHeight;
+}
+
+function appendToActivityTab(newEntries) {
+  const docBody = $("#doc-body");
+  if (!docBody.classList.contains("doc-activity")) return;
+  for (const ev of newEntries) {
+    const r = activityEntryToLine(ev);
+    if (!r) continue;
+    const div = document.createElement("div");
+    div.className = "act-full-line" + (r.cls ? " " + r.cls : "");
+    div.textContent = r.text;
+    docBody.appendChild(div);
+  }
+  if (state.activityAutoScroll) docBody.scrollTop = docBody.scrollHeight;
+}
+
+async function loadFullActivity() {
+  if (!state.activeRunId) return;
+  try {
+    const res = await fetch(`/api/runs/${state.activeRunId}/activity`);
+    if (!res.ok) return;
+    const data = await res.json();
+    state.activityLog = data.entries ?? [];
+    if (state.activeCategory === "Activity") renderActivityTab();
+  } catch {}
+}
+
 // Tab strip (two-row: category pills + file tabs)
 // ---------------------------------------------------------------------------
 
@@ -353,7 +426,8 @@ function renderTabStrip(categories) {
     btn.textContent = cat.label;
     btn.addEventListener("click", () => {
       state.activeCategory = cat.label;
-      renderFileRow(categories);
+      if (cat.label === "Activity") state.activityAutoScroll = true;
+      renderFileRow(categories, { autoSelect: true });
     });
     catRow.appendChild(btn);
   }
@@ -361,7 +435,7 @@ function renderTabStrip(categories) {
   renderFileRow(categories);
 }
 
-function renderFileRow(categories) {
+function renderFileRow(categories, { autoSelect = false } = {}) {
   const fileRow = $("#file-row");
   const autoBtn = $("#auto-btn");
 
@@ -370,6 +444,20 @@ function renderFileRow(categories) {
 
   // Update active state on cat-btns
   $$(".cat-btn").forEach((btn) => btn.classList.toggle("active", btn.textContent === state.activeCategory));
+
+  // Activity is a synthetic category — render the feed directly, no file tabs
+  if (state.activeCategory === "Activity") {
+    autoBtn.hidden = true;
+    renderActivityTab();
+    return;
+  }
+
+  // Leaving Activity tab — clear the stale activity view from doc-body
+  const docBody = $("#doc-body");
+  if (docBody.classList.contains("doc-activity")) {
+    docBody.className = "";
+    docBody.innerHTML = "";
+  }
 
   const cat = categories.find((c) => c.label === state.activeCategory);
   if (!cat) {
@@ -391,6 +479,12 @@ function renderFileRow(categories) {
   }
 
   autoBtn.hidden = state.activeCategory !== "Transcripts";
+
+  // Auto-select on deliberate category switch: show the previously active tab in this category, else the first one
+  if (autoSelect) {
+    const fileToSelect = cat.files.find((f) => f.key === state.activeTabKey) ?? cat.files[0];
+    if (fileToSelect) selectTab(fileToSelect, false);
+  }
 }
 
 function updateAutoBtn() {
@@ -500,7 +594,6 @@ function classifyActivityLine(text) {
 function renderActivity() {
   const feed = $("#activity-feed");
   const statusEl = $("#step-status");
-  if (!feed) return;
 
   // Most recent step/ticker event → update the current-step header
   const lastStep = [...state.activity].reverse().find(
@@ -543,6 +636,8 @@ function renderActivity() {
       statusEl.textContent = "";
     }
   }
+
+  if (!feed) return;
 
   // Render line events in the scrolling feed
   const lineEvents = state.activity.filter(
@@ -600,6 +695,8 @@ function connectRun(runId) {
   state.tokenLimit = null;
   state.tokenLimitSource = null;
   state.activity = [];
+  state.activityLog = [];
+  state.activityAutoScroll = true;
   hideInputPane();
 
   // Fetch meta for tag display
@@ -627,7 +724,9 @@ function connectRun(runId) {
       state.tokenLimitSource = msg.tokenLimitSource ?? null;
       if (msg.pendingInput) showInputPane(msg.pendingInput.prompt, msg.pendingInput.options ?? null, msg.pendingInput.type ?? "text");
       state.activity = msg.recentActivity ?? [];
+      state.activityLog = [];
       renderAll();
+      loadFullActivity();
 
     } else if (msg.type === "log") {
       state.logEvents.push(...(msg.newEvents ?? []));
@@ -653,12 +752,14 @@ function connectRun(runId) {
 
     } else if (msg.type === "files") {
       state.fileCategories = msg.files ?? [];
-      renderTabStrip(state.fileCategories);
+      renderTabStrip(getDisplayCategories());
 
     } else if (msg.type === "activity") {
       state.activity.push(...(msg.newActivity ?? []));
       if (state.activity.length > 200) state.activity = state.activity.slice(-200);
+      state.activityLog.push(...(msg.newActivity ?? []));
       renderActivity();
+      if (state.activeCategory === "Activity") appendToActivityTab(msg.newActivity ?? []);
 
     } else if (msg.type === "pending-input") {
       showInputPane(msg.prompt, msg.options ?? null, msg.inputType ?? "text");
@@ -704,7 +805,7 @@ function renderAll() {
   $("#step-status").textContent = state.pipelineState?.failReason ?? "";
   renderTokenTable(state.tokens);
   renderDecisions(state.decisions);
-  renderTabStrip(state.fileCategories);
+  renderTabStrip(getDisplayCategories());
   updateAutoBtn();
   renderActivity();
 }
@@ -747,7 +848,6 @@ function showIdleState() {
   $("#doc-body").innerHTML = `<div class="empty-state"><span>No run in progress</span><span class="hint">Start the factory to begin monitoring</span></div>`;
   state.activity = [];
   $("#step-status").textContent = "";
-  $("#activity-feed").innerHTML = "";
   hideInputPane();
 }
 
@@ -1112,7 +1212,7 @@ async function loadRunList() {
   for (const run of runs) {
     const row = document.createElement("div");
     row.className = "run-row";
-    const isIncomplete = run.verdict === "running";
+    const isResumable = run.verdict === "running" || run.verdict === "failed";
     const isLive = run.alive === true;
     row.innerHTML = `
       <span class="verdict-pill ${run.verdict ?? "running"}">${run.verdict ?? "running"}</span>
@@ -1121,9 +1221,9 @@ async function loadRunList() {
       <span class="run-profile-badge">${escHtml(run.profile ?? "full")}</span>
       <span class="run-tokens">${fmtTokens(run.totalTokens ?? 0)}</span>
       <span class="run-ts">${fmtTs(run.startTs)}</span>
-      ${isLive ? `<span class="live-pill">● Live</span>` : (isIncomplete ? `<button class="resume-btn">Resume</button>` : "")}
+      ${isLive ? `<span class="live-pill">● Live</span>` : (isResumable ? `<button class="resume-btn">Resume</button>` : "")}
     `;
-    if (!isLive && isIncomplete) {
+    if (!isLive && isResumable) {
       row.querySelector(".resume-btn").addEventListener("click", function (e) {
         e.stopPropagation();
         handleResume(run, this);
@@ -2315,10 +2415,9 @@ function renderStaffSidebar() {
   const scroll = document.createElement("div");
   scroll.className = "staff-sidebar-scroll";
 
-  // Brain Roles section
   const rolesHeader = document.createElement("div");
   rolesHeader.className = "staff-section-header";
-  rolesHeader.textContent = "Brain Roles";
+  rolesHeader.textContent = "Managers";
   scroll.appendChild(rolesHeader);
 
   for (const role of state.org.roles) {
@@ -2451,13 +2550,18 @@ async function checkHrSession() {
 }
 
 function openHrSession(data) {
-  // If already open for same session, just reconnect if needed
-  if (state.org.session?.runId === data.runId && state.org.session?.es) return;
+  // If already open for same session, just switch back to the HR tab
+  if (state.org.session?.runId === data.runId && state.org.session?.es) {
+    setOrgTab("hr");
+    return;
+  }
 
   // Close any previous session stream
   if (state.org.session?.es) state.org.session.es.close();
 
-  const typeLabel = data.type === "create-role" ? "New Role Design" : `Brain Interview`;
+  const typeLabel = data.type === "create-role" ? "New Role Design"
+    : data.type === "create-worker" ? "New Worker Design"
+    : "Manager Interview";
   const roleLabel = data.roleId ? ` — ${data.roleId}` : "";
   $("#org-hr-title").textContent = typeLabel + roleLabel;
 
@@ -2468,7 +2572,8 @@ function openHrSession(data) {
     $("#org-hr-transcript").innerHTML = `<div class="org-hr-thinking">Starting session…</div>`;
   }
 
-  // Show initial pending input or thinking state
+  // Start with input disabled; enable only when agent is waiting
+  hideHrInput();
   if (data.pendingInput) {
     showHrInput(data.pendingInput);
   } else {
@@ -2478,11 +2583,7 @@ function openHrSession(data) {
   // Switch to HR mode
   setOrgTab("hr");
 
-  // Disable navigation buttons
   renderStaffSidebar();
-  const interviewBtn = $("#org-interview-btn");
-  interviewBtn.textContent = "Session in progress…";
-  interviewBtn.disabled = true;
 
   // Connect SSE stream
   const es = new EventSource(`/api/hr-session/${data.runId}/stream`);
@@ -2531,8 +2632,20 @@ async function closeHrSession(reload) {
 
 function renderHrTranscript(content) {
   const pane = $("#org-hr-transcript");
-  pane.innerHTML = marked.parse(content);
-  pane.querySelectorAll("pre code").forEach((el) => hljs.highlightElement(el));
+  pane.className = "doc-transcript";
+  const lines = content.split("\n");
+  pane.innerHTML = lines.map((line) => {
+    if (/^## (User|Clarification)/.test(line)) {
+      return `<span class="tr-user">${escHtml(line.replace(/^## /, ""))}</span>`;
+    }
+    if (line.startsWith("## ")) {
+      return `<span class="tr-agent">${escHtml(line.replace(/^## /, ""))}</span>`;
+    }
+    if (line.startsWith("# ")) {
+      return `<span class="tr-heading">${escHtml(line.replace(/^# /, ""))}</span>`;
+    }
+    return escHtml(line);
+  }).join("\n");
   pane.scrollTop = pane.scrollHeight;
 }
 
@@ -2544,21 +2657,17 @@ function setHrStatus(status) {
 
 function showHrInput(input) {
   setHrStatus("waiting");
-  const area = $("#org-hr-input-area");
-  area.style.display = "flex";
+  const field = $("#org-hr-field");
+  const sendBtn = $("#org-hr-send");
+  field.disabled = false;
+  field.placeholder = "Type your response…";
+  sendBtn.disabled = false;
 
-  const promptEl = $("#org-hr-prompt");
-  promptEl.innerHTML = "";
-  if (input.prompt) {
-    promptEl.textContent = input.prompt;
-    promptEl.hidden = false;
-  } else {
-    promptEl.hidden = true;
-  }
-
+  // Only render option buttons for exclusive-choice turns (not hybrid — hybrid just means
+  // the text field is also available, so the buttons are redundant in a GUI context)
   const optionsEl = $("#org-hr-options");
   optionsEl.innerHTML = "";
-  if (input.options?.length > 0) {
+  if (input.type === "options" && input.options?.length > 0) {
     for (const opt of input.options) {
       const btn = document.createElement("button");
       btn.className = "org-hr-option-btn";
@@ -2568,15 +2677,15 @@ function showHrInput(input) {
     }
   }
 
-  const field = $("#org-hr-field");
-  const isTextOnly = input.type === "options" && !(input.type === "hybrid");
-  field.hidden = isTextOnly;
-  if (!isTextOnly) { field.focus(); }
+  field.focus();
 }
 
 function hideHrInput() {
-  $("#org-hr-input-area").style.display = "none";
-  $("#org-hr-field").value = "";
+  const field = $("#org-hr-field");
+  field.disabled = true;
+  field.placeholder = "Waiting…";
+  field.value = "";
+  $("#org-hr-send").disabled = true;
   $("#org-hr-options").innerHTML = "";
 }
 
@@ -2601,10 +2710,12 @@ function selectOrgRole(roleId) {
   const role = state.org.roles?.find((r) => r.id === roleId);
   if (!role) return;
 
+  const actionBar = $("#org-brain-action-bar");
+  actionBar.style.display = "flex";
   const btn = $("#org-interview-btn");
   if (state.org.session) {
     btn.textContent = "Session in progress…";
-    btn.disabled = true;
+    btn.disabled = false;
   } else {
     btn.textContent = role.hasBrain ? "Re-interview" : "Run Interview";
     btn.disabled = false;
@@ -2618,9 +2729,7 @@ function selectWorker(worker) {
   state.workers.activeId = worker.id;
   state.org.activeRoleId = null;
   renderStaffSidebar();
-  const btn = $("#org-interview-btn");
-  btn.disabled = true;
-  btn.textContent = state.org.session ? "Session in progress…" : "Run Interview";
+  $("#org-brain-action-bar").style.display = "none";
   renderWorkerDetail(worker);
   setOrgTab("brain");
 }
@@ -2630,7 +2739,7 @@ function setOrgTab(tab) {
 }
 
 function renderOrgBrain(role) {
-  const pane = $("#org-brain-pane");
+  const pane = $("#org-brain-content");
   if (role.hasBrain && role.brainContent) {
     pane.className = "mem-wiki";
     pane.innerHTML = marked.parse(role.brainContent);
@@ -2639,15 +2748,15 @@ function renderOrgBrain(role) {
     pane.className = "";
     pane.innerHTML = `
       <div class="empty-state">
-        <span>No brain yet for ${escHtml(role.name)}</span>
-        <span class="hint">Run an interview to build this role's decision-making profile.</span>
+        <span>No profile yet for ${escHtml(role.name)}</span>
+        <span class="hint">Run an interview to build this manager's decision-making profile.</span>
       </div>`;
   }
 }
 
 
 function renderWorkerDetail(worker) {
-  const pane = $("#org-brain-pane");
+  const pane = $("#org-brain-content");
   const prompt = worker.promptContent ?? "(no prompt)";
   pane.className = "";
   pane.innerHTML = `
@@ -3128,6 +3237,13 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  // Activity tab — pause auto-scroll when user scrolls up, resume at bottom
+  $("#doc-body").addEventListener("scroll", (e) => {
+    if (state.activeCategory !== "Activity") return;
+    const el = e.currentTarget;
+    state.activityAutoScroll = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  });
+
   // Auto button — unpin and return to auto-follow
   $("#auto-btn").addEventListener("click", () => {
     state.pinnedTabKey = null;
@@ -3315,9 +3431,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#memory-refresh-btn").addEventListener("click", loadMemoryData);
 
-  // Factory Staff
-  $("#staff-refresh-btn").addEventListener("click", () => loadStaffData());
-
   // Org Charts
   $("#orgcharts-refresh-btn").addEventListener("click", () => loadOrgChartsData(state.orgCharts.activeProfile));
   $("#orgcharts-save-btn").addEventListener("click", saveOrgChart);
@@ -3328,8 +3441,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#orgcharts-name-input").addEventListener("input", markOrgDirty);
   $("#orgcharts-desc-input").addEventListener("input", markOrgDirty);
   $("#org-interview-btn").addEventListener("click", async () => {
+    if (state.org.session) { setOrgTab("hr"); return; }
     const roleId = state.org.activeRoleId;
-    if (!roleId || state.org.session) return;
+    if (!roleId) return;
     const btn = $("#org-interview-btn");
     const prevText = btn.textContent;
     btn.disabled = true;

@@ -4,7 +4,5 @@
   "description": "Assembles the final artifact and manifest.",
   "slotType": "packager",
   "department": "build",
-  "builtin": true,
-  "sourceFile": "departments/build/packager.md",
   "created": "2025-01-01T00:00:00.000Z"
 }

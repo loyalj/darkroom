@@ -178,21 +178,23 @@ function runSummary(id) {
   const secApproved = logEvents.some((e) => e.event === "security-approved");
   const secBlocked = logEvents.some((e) => e.event === "security-rejected");
 
-  let verdict = "running";
-  if (aborted) {
-    verdict = "failed";
+  const pid = activeProcesses.get(id) ?? readPidFile(id);
+  const alive = pid != null && isAlive(pid);
+
+  let verdict;
+  if (alive) {
+    verdict = "running";
   } else if (complete) {
     if (secBlocked) verdict = "blocked";
     else if (secApproved && shipped) verdict = "shipped";
     else if (blocked) verdict = "blocked";
     else verdict = "complete";
+  } else {
+    verdict = "failed";
   }
 
   const totalTokens = tokens.reduce((s, t) => s + (t.input || 0) + (t.output || 0), 0);
   const totalMs = times.reduce((s, t) => s + (t.durationMs || 0), 0);
-
-  const pid = activeProcesses.get(id) ?? readPidFile(id);
-  const alive = pid != null && isAlive(pid);
 
   return {
     id,
@@ -535,6 +537,13 @@ app.get("/api/runs/:id", (req, res) => {
   const dir = path.join(RUNS_DIR, id);
   if (!fs.existsSync(dir)) return res.status(404).json({ error: "not found" });
   try { res.json(runDetail(id)); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/runs/:id/activity", (req, res) => {
+  const { id } = req.params;
+  const actPath = path.join(RUNS_DIR, id, "activity.jsonl");
+  if (!fs.existsSync(actPath)) return res.json({ entries: [] });
+  try { res.json({ entries: parseJsonLines(actPath) }); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/api/runs/:id/files", (req, res) => {
@@ -929,6 +938,11 @@ app.post("/api/launch", (req, res) => {
   if (resolvedMode === "auto") args.push("--mode", "auto");
   if (caveman) args.push("--caveman");
 
+  if (resumeId) {
+    const logPath = path.join(RUNS_DIR, resumeId, "log.jsonl");
+    fs.appendFileSync(logPath, JSON.stringify({ ts: new Date().toISOString(), phase: "factory", event: "resume" }) + "\n", "utf8");
+  }
+
   try {
     const child = spawn(process.execPath, args, {
       cwd: __dirname,
@@ -1117,12 +1131,20 @@ app.get("/api/hr-session/:id/stream", (req, res) => {
 
   sseSetup(res);
 
-  // Determine transcript path from session events
-  const events      = parseJsonLines(path.join(dir, "log.jsonl"));
-  const interviewEv = events.find((e) => e.event === "interview-start");
-  const designEv    = events.find((e) => e.event === "role-design-start");
-  const sessionType = designEv ? "create-role" : "interview";
-  const roleId      = interviewEv?.role ?? null;
+  // Determine session type. Use activeHrSession directly when this is the current session —
+  // avoids a race condition where the SSE stream connects before log.jsonl is written.
+  let sessionType, roleId;
+  if (activeHrSession.runId === id) {
+    sessionType = activeHrSession.type ?? "interview";
+    roleId      = activeHrSession.roleId ?? null;
+  } else {
+    const events         = parseJsonLines(path.join(dir, "log.jsonl"));
+    const interviewEv    = events.find((e) => e.event === "interview-start");
+    const designEv       = events.find((e) => e.event === "role-design-start");
+    const workerDesignEv = events.find((e) => e.event === "worker-design-start");
+    sessionType = designEv ? "create-role" : workerDesignEv ? "create-worker" : "interview";
+    roleId      = interviewEv?.role ?? null;
+  }
 
   let transcriptPath = null;
   if (sessionType === "interview" && roleId) {
@@ -1133,6 +1155,8 @@ app.get("/api/hr-session/:id/stream", (req, res) => {
     } catch {}
   } else if (sessionType === "create-role") {
     transcriptPath = path.join(dir, "role-design-transcript.md");
+  } else if (sessionType === "create-worker") {
+    transcriptPath = path.join(dir, "worker-design-transcript.md");
   }
 
   const pendingPath = path.join(dir, "pending-input.json");

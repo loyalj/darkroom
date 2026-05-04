@@ -43,26 +43,20 @@
           <span class="subtitle" style="margin-left: auto; color: var(--muted);">Waiting for a run…</span>
         </div>
 
-        <!-- Pipeline progress bar -->
+        <!-- Pipeline bar: current step (left) + dept progress (right) -->
         <div id="pipeline-bar">
-          <div class="phase-block"><div class="phase-label">Design</div><div class="phase-segments"><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div></div><div class="phase-timer phase-timer-pending">0:00</div></div>
-          <div class="phase-block"><div class="phase-label">Build</div><div class="phase-segments"><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div><div class="phase-segment"></div></div><div class="phase-timer phase-timer-pending">0:00</div></div>
-          <div class="phase-block"><div class="phase-label">Review</div><div class="phase-segments"><div class="phase-segment"></div><div class="phase-segment"></div></div><div class="phase-timer phase-timer-pending">0:00</div></div>
-          <div class="phase-block"><div class="phase-label">Security</div><div class="phase-segments"><div class="phase-segment"></div><div class="phase-segment"></div></div><div class="phase-timer phase-timer-pending">0:00</div></div>
+          <div id="step-cell">
+            <div id="current-step">Waiting for a run…</div>
+            <div id="step-status"></div>
+          </div>
+          <div id="phase-blocks"></div>
         </div>
 
         <!-- Monitor body: left column + document viewer -->
         <div id="monitor-body">
 
-          <!-- Left column: step + tokens + decisions -->
+          <!-- Left column: tokens + decisions -->
           <div id="monitor-left">
-            <div class="section" id="step-section">
-              <div class="section-title">Current Step</div>
-              <div id="current-step">Waiting for a run…</div>
-              <div id="step-status"></div>
-              <div id="activity-feed"></div>
-            </div>
-
             <div class="section">
               <div class="section-title">Token Usage</div>
               <table id="token-table">
@@ -76,7 +70,7 @@
             </div>
 
             <div class="section" style="flex: 1; display: flex; flex-direction: column; min-height: 0; border-bottom: none;">
-              <div class="section-title">Brain Decisions</div>
+              <div class="section-title">Manager Decisions</div>
               <div id="decision-feed">
                 <div class="decision-card decision-card-ghost">
                   <div class="ghost-bar" style="width:58%;height:10px;margin-bottom:4px;"></div>
@@ -260,7 +254,7 @@
                 <select id="inspector-manager-select" class="inspector-manager-select">
                   <option value="">— none —</option>
                 </select>
-                <p class="inspector-manager-hint">Decisions in this department escalate to this role's brain first.</p>
+                <p class="inspector-manager-hint">Decisions in this department escalate to this manager first.</p>
               </div>
 
               <div class="inspector-section" id="inspector-options-section">
@@ -285,16 +279,19 @@
       <div id="view-staff" class="view">
         <div class="panel-header">
           <h2>Factory Staff</h2>
-          <button id="staff-refresh-btn" class="memory-refresh-btn">↺ Refresh</button>
-          <button id="org-interview-btn" class="org-interview-btn" disabled>Run Interview</button>
         </div>
         <div id="org-body">
           <div id="org-sidebar"></div>
           <div id="org-main" class="org-mode-brain">
             <div id="org-brain-pane">
-              <div class="empty-state">
-                <span>Select a role or worker</span>
-                <span class="hint">Brain or prompt will appear here.</span>
+              <div id="org-brain-action-bar">
+                <button id="org-interview-btn" class="org-interview-btn" disabled>Run Interview</button>
+              </div>
+              <div id="org-brain-content">
+                <div class="empty-state">
+                  <span>Select a role or worker</span>
+                  <span class="hint">Profile or prompt will appear here.</span>
+                </div>
               </div>
             </div>
             <div id="org-hr-pane">

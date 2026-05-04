@@ -4,7 +4,5 @@
   "description": "Conducts the UX and experience requirements interview with the operator.",
   "slotType": "experience-interviewer",
   "department": "design",
-  "builtin": true,
-  "sourceFile": "departments/design/experience-interviewer.md",
   "created": "2025-01-01T00:00:00.000Z"
 }

@@ -193,9 +193,26 @@ body {
 
 #pipeline-bar {
   display: flex;
-  padding: 16px 20px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  align-items: stretch;
+}
+
+#step-cell {
+  width: 300px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+
+#phase-blocks {
+  flex: 1;
+  display: flex;
+  padding: 12px 20px;
 }
 
 .phase-block {
@@ -303,39 +320,23 @@ body {
   display: none !important;
 }
 
-#current-step { padding: 8px 16px 4px; font-size: 13px; font-weight: 500; color: var(--accent); }
+#current-step { font-size: 13px; font-weight: 500; color: var(--accent); }
 
 #step-status {
-  padding: 0 16px 6px;
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-height: 0;
 }
 
-#step-status:empty { padding: 0 16px 8px; }
 #step-status.step-status-error {
   color: var(--red);
   white-space: normal;
   overflow: visible;
   text-overflow: unset;
   word-break: break-word;
-  padding-bottom: 8px;
 }
-
-#activity-feed {
-  overflow-y: auto;
-  border-top: 1px solid var(--border);
-  padding: 4px 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.55;
-  max-height: 180px;
-}
-
-#activity-feed:empty { display: none; }
 
 .act-line {
   padding: 0 12px;
@@ -350,6 +351,37 @@ body {
 .act-err  { color: var(--red); }
 .act-finish { color: var(--green); font-weight: 600; }
 .act-ticker { color: var(--yellow); }
+
+#doc-body.doc-activity {
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.act-full-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 0;
+  color: var(--muted);
+}
+
+.act-full-step {
+  color: var(--subtle);
+  margin-top: 10px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.act-full-line.act-tool { color: var(--accent); }
+.act-full-line.act-ok   { color: var(--green); }
+.act-full-line.act-err  { color: var(--red); }
+.act-full-line.act-ticker { color: var(--yellow); }
 
 #token-table { padding: 0 16px 10px; font-family: var(--font-mono); font-size: 11px; width: 100%; }
 #token-table tr td:first-child { color: var(--muted); padding-right: 12px; }
@@ -1667,12 +1699,29 @@ body {
 
 #org-brain-pane {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#org-brain-action-bar {
+  display: none;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
+}
+
+#org-brain-content {
+  flex: 1;
   overflow-y: auto;
   padding: 20px 24px;
 }
 
 /* Pane visibility driven by mode class on #org-main */
-#org-main.org-mode-brain #org-brain-pane { display: block; }
+#org-main.org-mode-brain #org-brain-pane { display: flex; }
 
 /* HR session mode — hide everything except the session pane */
 #org-hr-pane                              { display: none; }
@@ -1758,7 +1807,17 @@ body {
   flex-shrink: 0;
   flex-direction: column;
   gap: 8px;
-  display: none; /* shown via inline style when active */
+  display: flex;
+}
+
+#org-hr-field:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+#org-hr-send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 #org-hr-prompt {
