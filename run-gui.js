@@ -247,6 +247,8 @@ function getRunFiles(runDir) {
     {
       label: "Reports",
       files: [
+        { key: "report-tokens",     label: "Tokens",           relPath: "token-usage.md",                           type: "markdown" },
+        { key: "report-time",       label: "Time",             relPath: "time-usage.md",                            type: "markdown" },
         { key: "report-copy",       label: "Copy Review",      relPath: "build/copy-review.txt",                    type: "text" },
         { key: "report-integration",label: "Integration",      relPath: "build/integration-report.md",              type: "markdown" },
         { key: "report-verdict",    label: "Review Verdict",   relPath: "review/verdict-report.md",                 type: "markdown" },
@@ -361,6 +363,15 @@ function deriveState(logEvents) {
       else if (e === "security-rejected") { currentStep = "Security · Blocked"; verdict = "blocked"; }
       else if (e === "security-division-complete") { phases.security = "done"; }
     } else if (phase === "factory") {
+      if (e === "resume") {
+        // A new attempt is starting — wipe the previous abort/failure state so the
+        // header and pipeline bar reflect the current attempt, not the old one.
+        verdict = null;
+        failReason = null;
+        for (const divId of Object.keys(phases)) {
+          if (phases[divId] === "failed") phases[divId] = "pending";
+        }
+      }
       if (e === "division-complete" && ev.loop) loops = Math.max(loops, ev.loop);
       if (e === "pipeline-complete") { verdict = verdict ?? "complete"; currentStep = "Pipeline Complete"; }
       if (e === "aborted" && verdict !== "complete" && verdict !== "shipped" && verdict !== "blocked") {
@@ -615,6 +626,10 @@ app.get("/api/runs/:id/stream", (req, res) => {
   const files = getRunFiles(dir);
   const { limit: tokenLimit, source: tokenLimitSource } = readBudgetLimit(dir);
 
+  // Extract run mode from the start event — used by the client to lock the chat pane in auto mode
+  const startEvent = logEvents.find((e) => e.phase === "factory" && e.event === "start");
+  const runMode = startEvent?.mode ?? "manual";
+
   // Check for a pending factory input point at snapshot time
   let pendingInput = null;
   const pendingInputPath = path.join(dir, "pending-input.json");
@@ -627,7 +642,7 @@ app.get("/api/runs/:id/stream", (req, res) => {
   const recentActivity = parseJsonLines(activityPath).slice(-80);
 
   // Initial snapshot — includes file manifest and active transcript name
-  sseSend(res, "snapshot", { id, logEvents, tokens, decisions, state, files, tokenLimit, tokenLimitSource, pendingInput, recentActivity });
+  sseSend(res, "snapshot", { id, logEvents, tokens, decisions, state, files, tokenLimit, tokenLimitSource, pendingInput, recentActivity, runMode });
 
   // Send the name of the most recently modified transcript so client auto-loads it
   function sendActiveTranscript() {
@@ -680,6 +695,7 @@ app.get("/api/runs/:id/stream", (req, res) => {
   // Watch all other known file paths so tabs appear as files are generated
   const watchedFilePaths = [
     "run-brain.md", "handoff/build-spec.md", "handoff/review-spec.md", "handoff/runtime-spec.md",
+    "token-usage.md", "time-usage.md",
     "build/architecture-plan.md", "build/copy-review.txt", "build/integration-report.md",
     "review/verdict-report.md", "review/edge-case-summary.md",
     "security/static-analysis-report.md", "security/dynamic-test-report.md", "security/security-verdict-report.md",
@@ -710,7 +726,7 @@ app.get("/api/runs/:id/stream", (req, res) => {
       if (!fs.existsSync(pendingInputPath)) return;
       try {
         const data = JSON.parse(fs.readFileSync(pendingInputPath, "utf8"));
-        sseSend(res, "pending-input", { prompt: data.prompt, inputType: data.type ?? "text", options: data.options ?? null });
+        sseSend(res, "pending-input", { prompt: data.prompt, inputType: data.type ?? "text", options: data.options ?? null, escalation: data.escalation ?? false, runMode });
       } catch {}
     },
     () => sseSend(res, "input-cleared", {})
@@ -939,8 +955,12 @@ app.post("/api/launch", (req, res) => {
   if (caveman) args.push("--caveman");
 
   if (resumeId) {
+    const ts = new Date().toISOString();
     const logPath = path.join(RUNS_DIR, resumeId, "log.jsonl");
-    fs.appendFileSync(logPath, JSON.stringify({ ts: new Date().toISOString(), phase: "factory", event: "resume" }) + "\n", "utf8");
+    fs.appendFileSync(logPath, JSON.stringify({ ts, phase: "factory", event: "resume" }) + "\n", "utf8");
+    // Write a visual separator to the activity log so resumed attempts are clearly distinct.
+    const activityPath = path.join(RUNS_DIR, resumeId, "activity.jsonl");
+    fs.appendFileSync(activityPath, JSON.stringify({ ts, type: "separator", label: "── resumed ──" }) + "\n", "utf8");
   }
 
   try {

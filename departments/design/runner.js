@@ -29,6 +29,7 @@ const { readFile, writeFile, buildSystemPrompt, logEvent, fileExists } = require
 const { claudeCall, claudeTurn } = require("../../adapters/claude-cli");
 const { runReflector } = require("../../lib/memory");
 const workers = require("../../lib/workers");
+const org = require("../../lib/org");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -135,6 +136,8 @@ async function main() {
   const id = resumeIndex >= 0 ? args[resumeIndex + 1] : runId();
   const modeIndex = args.indexOf("--mode");
   const runMode = modeIndex >= 0 ? args[modeIndex + 1] : "manual";
+  const managerIndex = args.indexOf("--manager");
+  const managerRoleId = managerIndex >= 0 ? args[managerIndex + 1] : null;
   const runDir = path.join(RUNS_DIR, id);
   setRunDir(runDir);
   const io = process.env.DARK_ROOM_IO === "file"
@@ -226,9 +229,48 @@ async function main() {
       ticker.done("no issues found");
       writeFile(clarificationTranscriptPath, `# Clarification Transcript\n\n(No issues found — clarification round skipped)\n`);
     } else if (runMode === "auto") {
-      ticker.done(`${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} found — skipped in auto mode`);
-      writeFile(clarificationTranscriptPath, `# Clarification Transcript\n\n(${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} found — clarification skipped in auto mode, proceeding with best-effort spec generation)\n`);
-      logEvent(runDir, { phase: "design", event: "clarification-round-skipped", issueCount: issuesFound.length });
+      ticker.done(`${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} found — asking manager`);
+
+      const brainContent = org.getBrainForRole(managerRoleId, null);
+      const runBrainPath = path.join(runDir, "run-brain.md");
+
+      const systemPrompt = buildSystemPrompt(
+        `You are the orchestrator for Darkroom. The design consistency checker has found ambiguities that need to be resolved before the spec can be written. Answer each clarification question decisively based on the operator's preferences and the project context from the interview transcripts.
+
+Respond with valid JSON only:
+{"status":"complete","output":{"answers":[{"id":"question-id","answer":"your specific answer"}]}}
+
+Be concrete and decisive — your answers feed directly into the spec writer.`,
+        brainContent ? `## Global Brain\n\n${brainContent}` : null,
+        fileExists(runBrainPath) ? `## Run Brain\n\n${readFile(runBrainPath)}` : null,
+        `## Functional Interview Transcript\n\n${readFile(functionalTranscriptPath)}`,
+        `## Experience Interview Transcript\n\n${readFile(experienceTranscriptPath)}`
+      );
+
+      const questionList = issuesFound.map((issue) =>
+        `{"id":"${issue.id}","summary":"${issue.summary.replace(/"/g, "'")}","question":"${issue.question.replace(/"/g, "'")}"}`
+      ).join("\n");
+
+      let answers = [];
+      try {
+        const result = claudeCall(
+          systemPrompt,
+          `Answer these clarification questions:\n\n${questionList}`,
+          (u) => logTokens(runDir, "Design", "Clarification (Auto)", u)
+        );
+        answers = result?.output?.answers ?? [];
+      } catch (err) {
+        console.error(`  [design] Brain clarification call failed: ${err.message}`);
+      }
+
+      const answerMap = Object.fromEntries(answers.map((a) => [a.id, a.answer]));
+      const transcriptLines = issuesFound.map((issue) => {
+        const answer = answerMap[issue.id] ?? "(no answer — proceeding with best-effort)";
+        return `### [${issue.id.toUpperCase()}] ${issue.summary}\n\n**Question:** ${issue.question}\n\n**Manager:** ${answer}`;
+      }).join("\n\n");
+
+      writeFile(clarificationTranscriptPath, `# Clarification Transcript\n\n(${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} answered by manager in auto mode)\n\n${transcriptLines}\n`);
+      logEvent(runDir, { phase: "design", event: "clarification-round-auto", issueCount: issuesFound.length, answeredCount: answers.length });
     } else {
       ticker.done(`${issuesFound.length} issue${issuesFound.length === 1 ? "" : "s"} found`);
       writeFile(clarificationTranscriptPath, `# Clarification Transcript\n`);

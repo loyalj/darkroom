@@ -29,6 +29,7 @@ const state = {
   activityAutoScroll: true,
   // Factory input chat pane
   pendingInput: null,
+  runMode: "manual",
   // Factory Memory
   memory: { data: null, activeDept: "design", activeTab: "wiki", editMode: false },
   // Factory Org
@@ -353,6 +354,8 @@ function activityEntryToLine(ev) {
       return { text: `✗ ${ev.reason}`, cls: "act-err" };
     case "error":
       return { text: `✗ ${ev.text}`, cls: "act-err" };
+    case "separator":
+      return { text: ev.label ?? "── resumed ──", cls: "act-separator" };
     default:
       return null;
   }
@@ -697,6 +700,7 @@ function connectRun(runId) {
   state.activity = [];
   state.activityLog = [];
   state.activityAutoScroll = true;
+  state.runMode = "manual";
   hideInputPane();
 
   // Fetch meta for tag display
@@ -722,7 +726,8 @@ function connectRun(runId) {
       state.fileCategories = msg.files ?? [];
       state.tokenLimit = msg.tokenLimit ?? null;
       state.tokenLimitSource = msg.tokenLimitSource ?? null;
-      if (msg.pendingInput) showInputPane(msg.pendingInput.prompt, msg.pendingInput.options ?? null, msg.pendingInput.type ?? "text");
+      state.runMode = msg.runMode ?? "manual";
+      if (msg.pendingInput) showInputPane(msg.pendingInput.prompt, msg.pendingInput.options ?? null, msg.pendingInput.type ?? "text", msg.pendingInput.escalation ?? false);
       state.activity = msg.recentActivity ?? [];
       state.activityLog = [];
       renderAll();
@@ -762,7 +767,7 @@ function connectRun(runId) {
       if (state.activeCategory === "Activity") appendToActivityTab(msg.newActivity ?? []);
 
     } else if (msg.type === "pending-input") {
-      showInputPane(msg.prompt, msg.options ?? null, msg.inputType ?? "text");
+      showInputPane(msg.prompt, msg.options ?? null, msg.inputType ?? "text", msg.escalation ?? false);
 
     } else if (msg.type === "input-cleared") {
       hideInputPane();
@@ -1242,12 +1247,14 @@ async function loadRunList() {
 // Factory input chat pane
 // ---------------------------------------------------------------------------
 
-function showInputPane(prompt, options = null, type = "text") {
+function showInputPane(prompt, options = null, type = "text", escalation = false) {
   state.pendingInput = prompt;
   const pane = $("#chat-pane");
   pane.classList.remove("idle");
   pane.classList.add("active");
   $("#chat-query").textContent = prompt;
+
+  const isAutoBlocked = state.runMode === "auto" && !escalation;
 
   const optionsEl = $("#chat-options");
   const inputRow = $("#chat-input-row");
@@ -1263,6 +1270,7 @@ function showInputPane(prompt, options = null, type = "text") {
       btn.textContent = opt;
       if (i === 0) btn.classList.add("opt-primary");
       if (/\babort\b|\bcancel\b/i.test(opt)) btn.classList.add("opt-danger");
+      btn.disabled = isAutoBlocked;
       btn.addEventListener("click", () => submitOption(opt));
       optionsEl.appendChild(btn);
     });
@@ -1275,10 +1283,10 @@ function showInputPane(prompt, options = null, type = "text") {
     inputRow.style.display = "flex";
     const field = $("#chat-field");
     field.value = "";
-    field.disabled = false;
-    field.placeholder = "Type your response… (Enter to send, Shift+Enter for new line)";
-    $("#chat-submit").disabled = false;
-    setTimeout(() => field.focus(), 50);
+    field.disabled = isAutoBlocked;
+    field.placeholder = isAutoBlocked ? "Brain deciding…" : "Type your response… (Enter to send, Shift+Enter for new line)";
+    $("#chat-submit").disabled = isAutoBlocked;
+    if (!isAutoBlocked) setTimeout(() => field.focus(), 50);
   } else {
     inputRow.style.display = "none";
   }

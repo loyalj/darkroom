@@ -349,6 +349,7 @@ body {
 .act-tool { color: var(--accent); }
 .act-ok   { color: var(--green); }
 .act-err  { color: var(--red); }
+.act-separator { color: var(--muted, #555); border-top: 1px solid var(--border, #333); margin: 6px 0; padding-top: 4px; }
 .act-finish { color: var(--green); font-weight: 600; }
 .act-ticker { color: var(--yellow); }
 

@@ -14,5 +14,8 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "node-pty": "^1.1.0"
   }
 }

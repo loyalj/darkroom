@@ -399,7 +399,7 @@ async function runIntegration(buildDir, buildSpec, architecturePlan, runDir) {
 // Copy writer + human approval
 // ---------------------------------------------------------------------------
 
-async function runCopyWriter(io, buildDir, buildSpec, runDir) {
+async function runCopyWriter(io, buildDir, buildSpec, buildSpecPath, runDir) {
   const copyApprovedPath = path.join(buildDir, "copy-approved.flag");
   if (fileExists(copyApprovedPath)) {
     console.log("Copy already approved — skipping.\n");
@@ -438,45 +438,86 @@ async function runCopyWriter(io, buildDir, buildSpec, runDir) {
   console.log(readFile(copyReviewPath));
   console.log(`\n${"=".repeat(60)}\n`);
 
+  const MAX_COPY_REVISIONS = 3;
   let approved = false;
+  let revisionCount = 0;
 
   while (!approved) {
     if (process.env.FACTORY_AUTO === "1") process.stdout.write('FACTORY_SIGNAL:{"point":"copy-review"}\n');
-    const input = await io.turn("Approve copy? (yes / no + feedback): ", { options: ["yes"], hybrid: true });
+    const input = await io.turn("Approve copy? (yes / no + feedback / fix: <code feedback>): ", { options: ["yes"], hybrid: true });
     const trimmed = input.trim().toLowerCase();
 
     if (trimmed === "yes" || trimmed === "y") {
       approved = true;
       writeFile(copyApprovedPath, new Date().toISOString());
       logEvent(runDir, { phase: "build", event: "copy-approved" });
-    } else {
-      console.log("\nFeedback noted. Revising copy...\n");
+    } else if (input.trim().startsWith("__CODE_FIX__:") || /^fix:/i.test(input.trim())) {
+      // Code bug detected — route to fix agent, then regenerate copy
+      const codeFeedback = input.trim().replace(/^__CODE_FIX__:\s*/i, "").replace(/^fix:\s*/i, "").trim();
+      console.log("\nCode fix required — applying fix before regenerating copy...\n");
+      if (fileExists(copyReviewPath)) fs.unlinkSync(copyReviewPath);
+      const report = fileExists(path.join(buildDir, "verification-report.json"))
+        ? readJSON(path.join(buildDir, "verification-report.json")) : null;
+      await runFixAgent(buildDir, buildSpecPath, report, codeFeedback, runDir);
+      logEvent(runDir, { phase: "build", event: "copy-code-fix-applied", feedback: codeFeedback });
 
-      const systemPrompt = buildSystemPrompt(
-        readFile(SHARED_CONVENTIONS),
-        readFile(SHARED_OUTPUT_FORMATS),
-        workers.resolveSlotPrompt(runDir, "build.copywriter"),
-        memoryContext
+      // Regenerate copy after code fix
+      const fixSrcDir = path.join(buildDir, "src");
+      const fixSourceFiles = collectSourceFiles(fixSrcDir);
+      const fixSystemPrompt = buildSystemPrompt(
+        readFile(SHARED_CONVENTIONS), readFile(SHARED_OUTPUT_FORMATS),
+        workers.resolveSlotPrompt(runDir, "build.copywriter"), memoryContext
       );
-
-      const srcDir = path.join(buildDir, "src");
-      const sourceFiles = collectSourceFiles(srcDir);
-
-      const userMessage = [
+      const fixUserMessage = [
         `## Build Spec\n\n${buildSpec}`,
-        `## Source Files\n\n${sourceFiles}`,
+        `## Source Files\n\n${fixSourceFiles}`,
         `## Working Directory\n\n${buildDir}`,
-        `## Human Feedback on Previous Review\n\n${input}`,
-        `## Previous Copy Review\n\n${readFile(copyReviewPath)}`,
-        "Revise the copy-review.txt based on the human feedback.",
       ].join("\n\n---\n\n");
-
-      // Delete old copy review so agent rewrites it
-      fs.unlinkSync(copyReviewPath);
-      const revDisplay = createPhaseDisplay("Build", "Copy Review", "4 of 6", "revising copy", { onFinish: (ms) => logTime(runDir, "Build", "Copy Review (revision)", ms) });
-      await agentStream(systemPrompt, userMessage, buildDir, revDisplay, { onUsage: (u) => logTokens(runDir, "Build", "Copy Review (revision)", u) });
-      revDisplay.finish("ready for approval");
+      const fixDisplay = createPhaseDisplay("Build", "Copy Review", "4 of 6", "regenerating copy after fix", { onFinish: (ms) => logTime(runDir, "Build", "Copy Review (post-fix)", ms) });
+      await agentStream(fixSystemPrompt, fixUserMessage, buildDir, fixDisplay, { onUsage: (u) => logTokens(runDir, "Build", "Copy Review (post-fix)", u) });
+      fixDisplay.finish("ready for approval");
       console.log("\n" + readFile(copyReviewPath) + "\n");
+    } else {
+      revisionCount++;
+      if (revisionCount >= MAX_COPY_REVISIONS) {
+        logEvent(runDir, { phase: "build", event: "copy-review-cap-reached", revisions: revisionCount });
+        console.log(`\n  Copy revision cap reached (${MAX_COPY_REVISIONS} attempts). Force approve or abort.`);
+        const force = await io.turn("Force approve? (yes / abort): ");
+        if (/^yes/i.test(force.trim())) {
+          approved = true;
+          writeFile(copyApprovedPath, new Date().toISOString());
+          logEvent(runDir, { phase: "build", event: "copy-approved", forced: true });
+        } else {
+          process.exit(1);
+        }
+      } else {
+        console.log("\nFeedback noted. Revising copy...\n");
+
+        const systemPrompt = buildSystemPrompt(
+          readFile(SHARED_CONVENTIONS),
+          readFile(SHARED_OUTPUT_FORMATS),
+          workers.resolveSlotPrompt(runDir, "build.copywriter"),
+          memoryContext
+        );
+
+        const srcDir = path.join(buildDir, "src");
+        const sourceFiles = collectSourceFiles(srcDir);
+
+        const userMessage = [
+          `## Build Spec\n\n${buildSpec}`,
+          `## Source Files\n\n${sourceFiles}`,
+          `## Working Directory\n\n${buildDir}`,
+          `## Human Feedback on Previous Review\n\n${input}`,
+          `## Previous Copy Review\n\n${readFile(copyReviewPath)}`,
+          "Revise the copy-review.txt based on the human feedback.",
+        ].join("\n\n---\n\n");
+
+        fs.unlinkSync(copyReviewPath);
+        const revDisplay = createPhaseDisplay("Build", "Copy Review", "4 of 6", "revising copy", { onFinish: (ms) => logTime(runDir, "Build", "Copy Review (revision)", ms) });
+        await agentStream(systemPrompt, userMessage, buildDir, revDisplay, { onUsage: (u) => logTokens(runDir, "Build", "Copy Review (revision)", u) });
+        revDisplay.finish("ready for approval");
+        console.log("\n" + readFile(copyReviewPath) + "\n");
+      }
     }
   }
 
@@ -877,7 +918,7 @@ async function main() {
   await runIntegration(buildDir, buildSpec, architecturePlan, runDir);
 
   // Phase 4: Copy writer + human approval
-  await runCopyWriter(io, buildDir, buildSpec, runDir);
+  await runCopyWriter(io, buildDir, buildSpec, buildSpecPath, runDir);
 
   // Phase 5: Verification with human-in-the-loop checkpoint
   await runVerificationLoop(buildDir, buildSpecPath, runDir);

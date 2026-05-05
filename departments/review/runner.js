@@ -64,9 +64,12 @@ function runtimeStandup(artifactDir, runtimeSpec, runDir) {
     return;
   }
 
-  // Find the actual verification command (first non-comment, non-empty line in the block)
+  // Find the actual verification command (first non-comment, non-empty line in the block).
+  // Strip bash-style semicolon chaining — cmd.exe on Windows doesn't treat ; as a separator,
+  // causing the semicolon to be passed as part of the script argument to node.
   const lines = verifyMatch[1].split("\n");
-  const verifyCmd = lines.find((l) => l.trim() && !l.trim().startsWith("#"));
+  const rawCmd = lines.find((l) => l.trim() && !l.trim().startsWith("#"));
+  const verifyCmd = rawCmd ? rawCmd.split(";")[0].trim() : null;
 
   if (!verifyCmd) {
     display.finish("could not parse verification command — proceeding");
@@ -80,7 +83,12 @@ function runtimeStandup(artifactDir, runtimeSpec, runDir) {
     encoding: "utf8",
   });
 
-  if (result.error || result.status !== 0) {
+  // Fail only if the process couldn't be spawned at all, or if stderr shows a hard Node.js
+  // crash (broken artifact) rather than an intentional exit (e.g. TTY check, missing args).
+  const hardCrash = result.error ||
+    /Cannot find module|SyntaxError:|ReferenceError:|\.js:\d+\n/.test(result.stderr ?? "");
+
+  if (hardCrash) {
     display.finish("standup check failed");
     console.error("stderr:", result.stderr);
     console.error("stdout:", result.stdout);
@@ -88,7 +96,11 @@ function runtimeStandup(artifactDir, runtimeSpec, runDir) {
     process.exit(1);
   }
 
-  if (result.stdout.trim()) display.log("  " + result.stdout.trim());
+  // Strip private-mode control sequences (cursor show/hide, alternate screen, etc.)
+  // but leave color codes intact so the output renders correctly.
+  const stripControls = (s) => s.replace(/\x1b\[\?[0-9;]*[a-zA-Z]/g, "");
+  if (result.stdout.trim()) display.log("  " + stripControls(result.stdout).trim());
+  if (result.stderr.trim()) display.log("  " + stripControls(result.stderr).trim());
   display.finish("artifact is running");
 }
 

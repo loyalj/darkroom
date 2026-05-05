@@ -18,6 +18,7 @@ function fileAdapter(runDir) {
       } else {
         payload.type = "text";
       }
+      if (opts.escalation) payload.escalation = true;
       fs.writeFileSync(pendingPath, JSON.stringify(payload), "utf8");
 
       return new Promise((resolve) => {
