@@ -83,7 +83,11 @@ A profile defines which divisions run and in what order. Select one from the **L
 | `full` | Design → Build → Review → Security | Full pipeline — production quality |
 | `audit` | Review → Security | Audit an artifact from a previous run |
 
-Profiles are fully editable from the **Factory Profiles** view.
+Profiles are fully editable from the **Factory Profiles** view, which has three tabs:
+
+- **Canvas** — a Drawflow drag-and-drop graph editor. Drag nodes from the department palette, draw connections between them, and rearrange the layout. Connections are validated: Darkroom only allows wiring a department's outputs to a compatible downstream department's inputs. Layout and edge changes are saved back to the profile JSON.
+- **Code** — raw JSON editor for direct edits.
+- **Workers** — slot roster per department node, with a dropdown per slot to assign a custom worker.
 
 ---
 
@@ -231,8 +235,10 @@ runs/{run-id}/
 org/
   roles/                      Role definitions
   profiles/                   Org chart profiles (escalation chains)
+  sessions/                   HR session logs (brain interviews, worker design)
   {role}/
     brain.md                  Decision-making profile for this role
+    brain.example.md          Annotated example brain (reference)
     brain-config.json         Structured config values (token limits, loop tolerance)
 
 workers/
@@ -247,6 +253,12 @@ memory/                       Accumulated craft knowledge — excluded from git
   design/  build/  review/  security/
     wiki.md                   Injected into agent prompts
     runs.jsonl                Structured run records
+
+accounts/
+  ledger.jsonl                Per-run cost accounting
+
+io/                           I/O abstraction layer (interaction handler + adapters)
+adapters/                     claude-cli.js — Claude Code CLI integration
 ```
 
 ---
@@ -261,13 +273,14 @@ departments/
               copywriter.md  verification.md  fix.md  packager.md
   design/     interviewer.md  experience-interviewer.md
               consistency-checker.md  spec-writer.md
-  review/     scenario-analyst.md  explorer.md  edge-case-runner.md  verdict.md
+  review/     scenario-analyst.md  explorer.md  edge-case-planner.md  edge-case-runner.md  verdict.md
   security/   static-analyst.md  dynamic-tester.md  verdict.md
   hr/         brain-interviewer.md  role-designer.md  worker-designer.md
 
 agents/
   shared/     conventions.md  output-formats.md
-  leadership/ run-brain-interviewer.md  architect-reviewer.md
+  leadership/ run-brain-interviewer.md  architect-reviewer.md  brain-interviewer.md
+  caveman/    dynamic-testing.md  edge-case-result.md  scenario-result.md  static-analysis.md
 ```
 
 ---
@@ -296,3 +309,11 @@ node inspect.js                       # list all runs
 ```
 
 **Caveman mode** compresses context passed between agents. Roughly 30–50% cheaper with minimal quality loss. Also available as `FACTORY_CAVEMAN=1 node run-factory.js`.
+
+**npm shortcuts:**
+
+```bash
+npm start          # dashboard (run-gui.js) → http://localhost:4242
+npm run start:cli  # factory pipeline (run-factory.js)
+npm run start:hr   # HR system (run-hr.js)
+```
